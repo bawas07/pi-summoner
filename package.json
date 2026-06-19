@@ -1,0 +1,42 @@
+{
+  "name": "agent-summoner",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Multi-agent orchestration extension for Pi — Scout (find), Crafter (build), Gatekeeper (verify), coordinated by a Main Agent with a Ledger.",
+  "keywords": [
+    "pi-package"
+  ],
+  "license": "MIT",
+  "author": "Zoych",
+  "pi": {
+    "extensions": [
+      "./extensions"
+    ]
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "node --import tsx --test extensions/**/*.test.ts",
+    "test:watch": "node --import tsx --test --watch extensions/**/*.test.ts",
+    "format": "prettier --write .",
+    "format:check": "prettier --check ."
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-ai": "^0.79.6",
+    "@earendil-works/pi-coding-agent": "^0.79.6",
+    "@earendil-works/pi-tui": "^0.79.6",
+    "@types/node": "^22.0.0",
+    "prettier": "^3.3.0",
+    "tsx": "^4.22.4",
+    "typebox": "^1.2.14",
+    "typescript": "^5.6.0"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-ai": ">=0.79.0",
+    "@earendil-works/pi-coding-agent": ">=0.79.0",
+    "@earendil-works/pi-tui": ">=0.79.0",
+    "typebox": ">=1.2.0"
+  }
+}
