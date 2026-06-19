@@ -1,19 +1,37 @@
 /**
  * plan-file.ts — Plan file writer for persistent, updateable task plans.
  *
- * Writes a structured PLAN.md (or .pi/plan.md) with:
+ * Writes a structured plan to .pi/bulletin/<timestamp>.md with:
  *   - Requirements / scope / execution phases
  *   - Checkbox todo list (completed items preserved, never deleted)
  *   - Risk notes and trust mode
  *
- * The LLM updates this file as phases complete and when requirements change.
+ * The LLM creates this file after plan approval and updates it as phases
+ * complete. Each task gets its own timestamped file — no overwrites.
  *
  * @see commands.ts — /summoner workflow instructions
  */
 
+import { join } from "node:path";
 import type { Plan } from "./planner";
 import { getLedger } from "./ledger";
 import { getTrustMode } from "./state";
+
+// ── Plan File Path ───────────────────────────────────────────────────────
+
+/**
+ * Generate the plan file path: .pi/bulletin/<timestamp-slug>.md
+ * Uses ISO timestamp with colons replaced for filesystem safety.
+ */
+export function planFilePath(cwd: string, slug?: string): string {
+  const ts = new Date()
+    .toISOString()
+    .replace(/:/g, "-")
+    .replace(/\..+/, "")
+    .replace("T", "_");
+  const name = slug ? `${ts}_${slug}` : ts;
+  return join(cwd, ".pi", "bulletin", `${name}.md`);
+}
 
 // ── Plan File Generation ─────────────────────────────────────────────────
 

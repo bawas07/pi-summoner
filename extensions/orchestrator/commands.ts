@@ -64,9 +64,9 @@ export function registerCommands(pi: ExtensionAPI): void {
         `- Do NOT proceed to execution until the user explicitly approves the plan.
 
 ` +
-        `### Write PLAN.md:
+        `### Write plan file:
 ` +
-        `After approval, create a \`PLAN.md\` file (or \`.pi/plan.md\`) in the project root with:
+        `After approval, create a file at \`.pi/bulletin/<timestamp>.md\` (e.g., \`2026-06-19_14-30-00.md\`) with:
 ` +
         `
 ` +
@@ -103,7 +103,7 @@ export function registerCommands(pi: ExtensionAPI): void {
 ` +
         `Unplanned file discovery: check the Ledger, approve if no conflict, wait if blocked.
 ` +
-        `**After EACH phase completes, update PLAN.md:**
+        `**After EACH phase completes, update the .pi/bulletin plan file:**
 ` +
         `- Check off completed files: change \`- [ ]\` to \`- [x]\` for done items
 ` +
@@ -130,7 +130,7 @@ export function registerCommands(pi: ExtensionAPI): void {
 ` +
         `Walk the Ledger and present the final report.
 ` +
-        `Update PLAN.md with final status — all checkboxes should be \`- [x]\` or \`- [ ] ❌\` for failed.
+        `Update the .pi/bulletin plan file with final status — all checkboxes should be \`- [x]\` or \`- [ ] ❌\` for failed.
 
 ` +
         `---
