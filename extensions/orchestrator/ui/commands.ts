@@ -52,16 +52,25 @@ export function registerCommands(pi: ExtensionAPI): void {
 ` +
         `- Present trust mode options: 🙈 Trust or 🔍 Checkpoint
 ` +
-        `- **STOP and ASK the user:** "Does this plan look good? Anything you want to change?"
+        `- **STOP and ASK the user ONLY about the plan:** "Does this plan look good? Anything you want to change?"
 
 ` +
         `### Approval gate (MANDATORY):
 ` +
-        `- If the user approves: call \`set_trust_mode\` with their trust choice.
-` +
         `- If the user wants changes: update the plan based on their feedback. Re-invoke Scout if scope changed. Present revised plan and ask again.
 ` +
-        `- Do NOT proceed to execution until the user explicitly approves the plan.
+        `- Do NOT mention trust mode yet. Only discuss the plan itself.
+` +
+        `- Do NOT proceed until the user explicitly says the plan is ok.
+
+` +
+        `### After plan is approved (SECOND step):
+` +
+        `- Only AFTER the user approves the plan, THEN ask about trust mode:
+` +
+        `  "How should I proceed? 🙈 Trust (auto-proceed, auto-fix) or 🔍 Checkpoint (ask before each action)?"
+` +
+        `- Wait for their choice, then call \`set_trust_mode\` with it.
 
 ` +
         `### Write plan file:
