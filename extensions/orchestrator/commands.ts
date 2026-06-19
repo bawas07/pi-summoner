@@ -66,7 +66,13 @@ export function registerCommands(pi: ExtensionAPI): void {
 ` +
         `### Write plan file:
 ` +
-        `After approval, create a file at \`.pi/bulletin/<timestamp>.md\` (e.g., \`2026-06-19_14-30-00.md\`) with:
+        `After approval, create a file at \`.pi/bulletin/<title>_<timestamp>.md\` with:
+` +
+        `- **Title:** a short slug from the task (e.g., \`update-be-response-format\`)
+` +
+        `- **Timestamp:** ISO format with colons replaced (e.g., \`2026-06-19_14-30-00\`)
+` +
+        `- Example: \`.pi/bulletin/update-be-response-format_2026-06-19_14-30-00.md\`
 ` +
         `
 ` +

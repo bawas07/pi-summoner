@@ -20,7 +20,7 @@ import { getTrustMode } from "./state";
 // ── Plan File Path ───────────────────────────────────────────────────────
 
 /**
- * Generate the plan file path: .pi/bulletin/<timestamp-slug>.md
+ * Generate the plan file path: .pi/bulletin/<slug>_<timestamp>.md
  * Uses ISO timestamp with colons replaced for filesystem safety.
  */
 export function planFilePath(cwd: string, slug?: string): string {
@@ -29,8 +29,24 @@ export function planFilePath(cwd: string, slug?: string): string {
     .replace(/:/g, "-")
     .replace(/\..+/, "")
     .replace("T", "_");
-  const name = slug ? `${ts}_${slug}` : ts;
+  const name = slug ? `${slug}_${ts}` : ts;
   return join(cwd, ".pi", "bulletin", `${name}.md`);
+}
+
+/**
+ * Generate a slug from the user's task description.
+ * Converts to lowercase, replaces non-alphanumeric with hyphens, truncates to 40 chars.
+ */
+export function generatePlanSlug(task: string): string {
+  const slug = task
+    .toLowerCase()
+    .replace(/[^a-z0-9\s-]/g, "")
+    .trim()
+    .replace(/\s+/g, "-")
+    .slice(0, 40)
+    .replace(/-$/, "");
+
+  return slug || "untitled";
 }
 
 // ── Plan File Generation ─────────────────────────────────────────────────
