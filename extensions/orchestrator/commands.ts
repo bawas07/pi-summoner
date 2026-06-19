@@ -44,9 +44,24 @@ export function registerCommands(pi: ExtensionAPI): void {
 ` +
         `## Step 2 — Plan
 ` +
-        `After Scout returns, present the execution plan with phases and risks.
+        `After Scout returns, present the execution plan to the user:
 ` +
-        `Ask the user: 🙈 Trust or 🔍 Checkpoint? Then call \`set_trust_mode\`.
+        `- Show the phase breakdown (which files in which order, parallel-safety notes)
+` +
+        `- Flag any risks (low confidence, circular dependencies)
+` +
+        `- Present trust mode options: 🙈 Trust or 🔍 Checkpoint
+` +
+        `- **STOP and ASK the user:** "Does this plan look good? Anything you want to change?"
+
+` +
+        `### Approval gate (MANDATORY):
+` +
+        `- If the user approves: call \`set_trust_mode\` with their trust choice, then proceed to Step 3.
+` +
+        `- If the user wants changes: update the plan based on their feedback. Re-invoke Scout if the scope changed. Present the revised plan and ask again.
+` +
+        `- Do NOT proceed to execution until the user explicitly approves the plan.
 
 ` +
         `## Step 3 — Execute
