@@ -58,8 +58,8 @@ function truncateHead(
 
   return { content: output, truncated, outputLines, totalLines };
 }
-import { registerAgent } from "./agents";
-import { checkAndClearDirty, markScoutDirty } from "./state";
+import { registerAgent } from "../core/agents";
+import { checkAndClearDirty, markScoutDirty } from "../core/state";
 
 // ── Types ──────────────────────────────────────────────────────────────────
 

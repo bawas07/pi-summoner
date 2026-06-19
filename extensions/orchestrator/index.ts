@@ -14,13 +14,13 @@
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { initLedger, replayFromEntries } from "./ledger";
-import { registerScout } from "./scout";
-import { registerCrafter } from "./crafter";
-import { registerGatekeeper } from "./gatekeeper";
-import { registerCommands } from "./commands";
-import { registerStatusWidget } from "./ui";
-import { discoverUserAgents } from "./agents";
+import { initLedger, replayFromEntries } from "./core/ledger";
+import { registerScout } from "./scout/scout";
+import { registerCrafter } from "./crafter/crafter";
+import { registerGatekeeper } from "./gatekeeper/gatekeeper";
+import { registerCommands } from "./ui/commands";
+import { registerStatusWidget } from "./ui/ui";
+import { discoverUserAgents } from "./core/agents";
 
 export default function (pi: ExtensionAPI) {
   // Wire Ledger to pi for persistence

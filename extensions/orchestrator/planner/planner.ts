@@ -12,8 +12,8 @@
  * @see docs/plan.md Phase 2
  */
 
-import type { DependencyGraph } from "./scout";
-import { populateFromPlan } from "./ledger";
+import type { DependencyGraph } from "../scout/scout";
+import { populateFromPlan } from "../core/ledger";
 
 // ── Types ──────────────────────────────────────────────────────────────────
 

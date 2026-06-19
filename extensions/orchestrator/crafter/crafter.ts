@@ -24,15 +24,15 @@ import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { withFileMutationQueue } from "@earendil-works/pi-coding-agent";
-import { registerAgent } from "./agents";
-import { setFileStatus, getFileEntry } from "./ledger";
+import { registerAgent } from "../core/agents";
+import { setFileStatus, getFileEntry } from "../core/ledger";
 import {
   markScoutDirty,
   updateAgentActivity,
   markAgentRunning,
   markAgentDone,
-} from "./state";
-import { invalidateFile as invalidateScoutFile } from "./scout";
+} from "../core/state";
+import { invalidateFile as invalidateScoutFile } from "../scout/scout";
 import {
   parseTask,
   readTargetFile,

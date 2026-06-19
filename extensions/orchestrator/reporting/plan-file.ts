@@ -13,9 +13,9 @@
  */
 
 import { join } from "node:path";
-import type { Plan } from "./planner";
-import { getLedger } from "./ledger";
-import { getTrustMode } from "./state";
+import type { Plan } from "../planner/planner";
+import { getLedger } from "../core/ledger";
+import { getTrustMode } from "../core/state";
 
 // ── Plan File Path ───────────────────────────────────────────────────────
 

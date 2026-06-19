@@ -8,8 +8,8 @@
  * @see docs/plan.md Phase 5
  */
 
-import { getAllFiles, type FileEntry } from "./ledger";
-import type { ClassifiedFailure, GatekeeperAction } from "./gatekeeper";
+import { getAllFiles, type FileEntry } from "../core/ledger";
+import type { ClassifiedFailure, GatekeeperAction } from "../gatekeeper/gatekeeper";
 
 // ── Types ──────────────────────────────────────────────────────────────────
 

@@ -7,7 +7,7 @@
 import { describe, it, beforeEach } from "node:test";
 import assert from "node:assert";
 import { buildReportData, formatReport, attachTestResults } from "./report";
-import { resetLedger, setFileStatus } from "./ledger";
+import { resetLedger, setFileStatus } from "../core/ledger";
 
 describe("Report", () => {
   beforeEach(() => {

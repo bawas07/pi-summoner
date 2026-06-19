@@ -16,7 +16,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { randomBytes } from "node:crypto";
 import { runScout } from "./scout";
-import { dirtyScoutCache } from "./state";
+import { dirtyScoutCache } from "../core/state";
 
 // ── Fixture Helpers ────────────────────────────────────────────────────────
 

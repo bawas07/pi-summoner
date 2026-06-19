@@ -19,9 +19,9 @@
  */
 
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { registerAgent } from "./agents";
-import { getAllFiles } from "./ledger";
-import { getTrustMode } from "./state";
+import { registerAgent } from "../core/agents";
+import { getAllFiles } from "../core/ledger";
+import { getTrustMode } from "../core/state";
 
 // ── Types ──────────────────────────────────────────────────────────────────
 

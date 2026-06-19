@@ -10,8 +10,8 @@
 import { describe, it } from "node:test";
 import assert from "node:assert";
 import { buildPhases, buildPlan, formatPlan, approvePlan } from "./planner";
-import { getLedger, resetLedger } from "./ledger";
-import type { DependencyGraph } from "./scout";
+import { getLedger, resetLedger } from "../core/ledger";
+import type { DependencyGraph } from "../scout/scout";
 
 // ── Helpers ────────────────────────────────────────────────────────────────
 

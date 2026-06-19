@@ -11,8 +11,8 @@
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { getRegisteredAgents } from "./agents";
-import { agentActivityLog } from "./state";
+import { getRegisteredAgents } from "../core/agents";
+import { agentActivityLog } from "../core/state";
 
 // ── Command Registration ──────────────────────────────────────────────────
 

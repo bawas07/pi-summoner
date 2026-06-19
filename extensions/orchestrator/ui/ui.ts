@@ -16,7 +16,7 @@
  */
 
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { agentActivityLog } from "./state";
+import { agentActivityLog } from "../core/state";
 
 // ── Widget ────────────────────────────────────────────────────────────────
 
