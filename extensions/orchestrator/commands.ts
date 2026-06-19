@@ -23,42 +23,59 @@ export function registerCommands(pi: ExtensionAPI): void {
     handler: async (args, ctx) => {
       const task = args?.trim() || "the current task";
 
-      const lines = [
-        `## 🏰 Agent Summoner — Orchestrator Workflow`,
-        ``,
-        `**Task:** ${task}`,
-        ``,
-        `Use the following workflow:`,
-        ``,
-        `1. **Scout** — Call \`summon_scout\` to map file dependencies in the affected scope.`,
-        `   - Provide the directory to scan and optionally a symbol/pattern to find.`,
-        `   - Scout returns a dependency graph and confidence level.`,
-        ``,
-        `2. **Plan** — Present the execution plan to the user:`,
-        `   - Show the phase breakdown (files grouped by parallel safety).`,
-        `   - Flag any risks (low confidence, circular dependencies).`,
-        `   - Ask the user to choose trust mode: 🙈 Trust or 🔍 Checkpoint.`,
-        `   - Call \`set_trust_mode\` with the user's choice.`,
-        ``,
-        `3. **Execute** — Summon Crafters per phase:`,
-        `   - Phase 0 (if needed): \`summon_crafter_dep_install\` for dependencies.`,
-        `   - Each file gets a \`summon_crafter\` call with the file path and instruction.`,
-        `   - Files in the same phase can run in parallel.`,
-        `   - If a Crafter discovers an unplanned file, check the Ledger and approve or wait.`,
-        ``,
-        `4. **Verify** — Summon Gatekeeper:`,
-        `   - First: \`summon_gatekeeper\` with \`{"phase":"baseline"}\` before any edits.`,
-        `   - After all phases: \`summon_gatekeeper\` with \`{"phase":"verify"}\` to classify failures.`,
-        `   - Out-of-scope failures ALWAYS require user approval (both trust modes).`,
-        ``,
-        `5. **Report** — Walk the Ledger to present the final report with status, discoveries, and test results.`,
-        ``,
-        `---`,
-        `**Status:** Use \`/watch <agent>\` to monitor any active agent.`,
-        `**Agents:** \`/summon <name>\` to trigger a specific agent directly.`,
-      ].join("\n");
+      // Send a user message that the LLM will immediately act on.
+      // This triggers the actual workflow — the LLM reads this and starts calling tools.
+      pi.sendUserMessage(
+        `🏰 **Agent Summoner workflow initiated.**
 
-      ctx.ui.notify(lines, "info");
+` +
+        `**Task:** ${task}
+
+` +
+        `Follow this workflow step by step. Do NOT just describe it — actually call the tools.
+
+` +
+        `## Step 1 — Scout
+` +
+        `Call \`summon_scout\` now to map dependencies. Determine the scope from the task.
+` +
+        `Provide a JSON object: { "scope": "<dir>", "pattern": "<optional symbol>" }
+
+` +
+        `## Step 2 — Plan
+` +
+        `After Scout returns, present the execution plan with phases and risks.
+` +
+        `Ask the user: 🙈 Trust or 🔍 Checkpoint? Then call \`set_trust_mode\`.
+
+` +
+        `## Step 3 — Execute
+` +
+        `Summon \`summon_crafter\` for each file in each phase. Same-phase files can run in parallel.
+` +
+        `If Phase 0 is needed (new deps), call \`summon_crafter_dep_install\` first.
+` +
+        `Unplanned file discovery: check the Ledger, approve if no conflict, wait if blocked.
+
+` +
+        `## Step 4 — Verify
+` +
+        `Call \`summon_gatekeeper\` with { "phase": "baseline" } BEFORE any edits.
+` +
+        `After all edits, call \`summon_gatekeeper\` with { "phase": "verify" }.
+` +
+        `Out-of-scope failures: ALWAYS ask the user before fixing.
+
+` +
+        `## Step 5 — Report
+` +
+        `Walk the Ledger and present the final report.
+
+` +
+        `---
+` +
+        `**Start now.** Call summon_scout for Step 1.`,
+      );
     },
   });
 
