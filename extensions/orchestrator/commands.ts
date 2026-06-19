@@ -1,7 +1,8 @@
 /**
  * commands.ts — Slash commands for the orchestrator.
  *
- * /summon <agent> [task]  — triggers an agent tool call (nudges LLM)
+ * /summoner [task] — triggers the full orchestrator workflow (Scout → Plan → Crafter → Gatekeeper)
+ * /summon <agent> [task]  — triggers a single agent tool call (nudges LLM)
  * /watch  <agent>         — read-only live feed of agent activity
  * /back                    — return from watch mode to Main Agent view
  *
@@ -16,6 +17,51 @@ import { agentActivityLog } from "./state";
 // ── Command Registration ──────────────────────────────────────────────────
 
 export function registerCommands(pi: ExtensionAPI): void {
+  // /summoner — full orchestrator workflow
+  pi.registerCommand("summoner", {
+    description: "Launch the full orchestrator workflow: Scout → Plan → Crafter → Gatekeeper",
+    handler: async (args, ctx) => {
+      const task = args?.trim() || "the current task";
+
+      const lines = [
+        `## 🏰 Agent Summoner — Orchestrator Workflow`,
+        ``,
+        `**Task:** ${task}`,
+        ``,
+        `Use the following workflow:`,
+        ``,
+        `1. **Scout** — Call \`summon_scout\` to map file dependencies in the affected scope.`,
+        `   - Provide the directory to scan and optionally a symbol/pattern to find.`,
+        `   - Scout returns a dependency graph and confidence level.`,
+        ``,
+        `2. **Plan** — Present the execution plan to the user:`,
+        `   - Show the phase breakdown (files grouped by parallel safety).`,
+        `   - Flag any risks (low confidence, circular dependencies).`,
+        `   - Ask the user to choose trust mode: 🙈 Trust or 🔍 Checkpoint.`,
+        `   - Call \`set_trust_mode\` with the user's choice.`,
+        ``,
+        `3. **Execute** — Summon Crafters per phase:`,
+        `   - Phase 0 (if needed): \`summon_crafter_dep_install\` for dependencies.`,
+        `   - Each file gets a \`summon_crafter\` call with the file path and instruction.`,
+        `   - Files in the same phase can run in parallel.`,
+        `   - If a Crafter discovers an unplanned file, check the Ledger and approve or wait.`,
+        ``,
+        `4. **Verify** — Summon Gatekeeper:`,
+        `   - First: \`summon_gatekeeper\` with \`{"phase":"baseline"}\` before any edits.`,
+        `   - After all phases: \`summon_gatekeeper\` with \`{"phase":"verify"}\` to classify failures.`,
+        `   - Out-of-scope failures ALWAYS require user approval (both trust modes).`,
+        ``,
+        `5. **Report** — Walk the Ledger to present the final report with status, discoveries, and test results.`,
+        ``,
+        `---`,
+        `**Status:** Use \`/watch <agent>\` to monitor any active agent.`,
+        `**Agents:** \`/summon <name>\` to trigger a specific agent directly.`,
+      ].join("\n");
+
+      ctx.ui.notify(lines, "info");
+    },
+  });
+
   // /summon — trigger an agent
   pi.registerCommand("summon", {
     description: "Summon an agent for a task",
