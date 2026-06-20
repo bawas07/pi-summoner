@@ -35,6 +35,31 @@ export function registerCommands(pi: ExtensionAPI): void {
         `Follow this workflow step by step. Do NOT just describe it — actually call the tools.
 
 ` +
+        `## Step 0 — Check for existing plan
+` +
+        `Check if a plan already exists for this task:
+` +
+        `- Look in \`.pi/bulletin/\` for a matching plan file
+` +
+        `- Check for OpenSpec plans or other plan formats in the project
+` +
+        `- Read any existing plan file that matches the task
+
+` +
+        `### If a plan already exists:
+` +
+        `- Skip Steps 1-2 entirely. The plan is already written and approved.
+` +
+        `- Jump directly to **Step 2d** — ask the user for trust mode.
+` +
+        `- Then proceed to **Step 3** (Execute) using the existing plan.
+
+` +
+        `### If no plan exists:
+` +
+        `- Continue to Step 1 below.
+
+` +
         `## Step 1 — Scout
 ` +
         `Call \`summon_scout\` now to map dependencies. Determine the scope from the task.
