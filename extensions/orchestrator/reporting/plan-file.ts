@@ -202,9 +202,10 @@ export function generatePlanContent(params: {
     const entry = ledger.files[f.path];
     const checked = entry?.status === "done" ? "x" : " ";
     todoItems.push(`- [${checked}] \`${f.path}\` — ${f.change}`);
-    // Also add a test todo for each file
-    todoItems.push(`- [ ] Write tests for \`${f.path}\` (unit / integration / e2e)`);
   }
+
+  // Add test todos only where applicable (LLM decides per-file)
+  todoItems.push(`- [ ] Write tests (unit min for features, regression for bug fixes)`);
 
   // Add verification todos
   for (const v of params.verification) {

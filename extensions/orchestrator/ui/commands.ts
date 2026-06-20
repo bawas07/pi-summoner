@@ -168,7 +168,13 @@ export function registerCommands(pi: ExtensionAPI): void {
         `### N. Tests
 
 ` +
-        `Create at least **one test** per changed file. If the change is complex, add unit + integration + e2e as needed.
+        `**New feature** → unit test minimum. Integration if API/DB. E2E only if user-facing critical flow.
+` +
+        `**Bug fix** → regression test if the bug was untested. If tests exist, just rerun them.
+` +
+        `**Refactor / config / typo** → no new tests needed unless behavior changes.
+` +
+        `Target: 60-70% coverage. Test behavior, not implementation.
 
 ` +
         `**\`<test file path>\`** — \`describe('<unit>')\`:
@@ -257,21 +263,32 @@ export function registerCommands(pi: ExtensionAPI): void {
         `If Phase 0 is needed (new deps), call \`summon_crafter_dep_install\` first.
 
 ` +
-        `### Test creation (MANDATORY):
+        `### Test creation:
 ` +
-        `For EVERY implementation step, also create tests:
+        `Use judgment — not every file change needs a new test.
+
 ` +
-        `- **Minimum:** at least 1 test per changed file (unit, integration, or e2e)
+        `**Bug fixes / updates to existing code:**
 ` +
-        `- Unit tests for business logic, data transformations, edge cases
+        `- If tests already exist for the changed code → just rerun them. Do NOT create duplicates.
 ` +
-        `- Integration tests for API routes, database operations
+        `- If the bug was untested → add a regression test so it doesn't come back.
+
 ` +
-        `- E2E tests for critical user flows (only if the change is user-facing)
+        `**New features:**
 ` +
-        `- Write tests alongside the implementation — do NOT defer to a separate step
+        `- **Minimum:** unit test for the core logic.
 ` +
-        `- If all 3 test types are overkill, create at least a unit test
+        `- Add integration test if the feature touches API routes, DB, or external services.
+` +
+        `- Add E2E test only for critical user-facing flows — skip for internal refactors.
+
+` +
+        `**Coverage target:** 60-70% minimum, unless the user specifies otherwise.
+` +
+        `- Don't write tests just to hit coverage — test behavior, not implementation.
+` +
+        `- Trivial changes (typos, config, formatting) may skip tests entirely.
 
 ` +
         `### After EACH phase completes:
