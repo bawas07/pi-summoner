@@ -165,6 +165,23 @@ export function registerCommands(pi: ExtensionAPI): void {
         `...
 
 ` +
+        `### N. Tests
+
+` +
+        `Create at least **one test** per changed file. If the change is complex, add unit + integration + e2e as needed.
+
+` +
+        `**\`<test file path>\`** — \`describe('<unit>')\`:
+` +
+        `- <test case 1>
+` +
+        `- <test case 2>
+` +
+        `- throws/returns <error> when <condition>
+` +
+        `- edge case: <scenario>
+
+` +
         `---
 
 ` +
@@ -194,7 +211,9 @@ export function registerCommands(pi: ExtensionAPI): void {
 ` +
         `- [ ] \`<file>\` — <change>
 ` +
-        `- [ ] Run full test suite
+        `- [ ] Write tests for \`<file>\` (unit / integration / e2e)
+` +
+        `- [ ] Run full test suite — confirm all green
 ` +
         `- [ ] Self-review diff against Out-of-Scope
 
@@ -236,24 +255,37 @@ export function registerCommands(pi: ExtensionAPI): void {
         `Summon \`summon_crafter\` for each file in each phase. Same-phase files can run in parallel.
 ` +
         `If Phase 0 is needed (new deps), call \`summon_crafter_dep_install\` first.
+
 ` +
-        `Unplanned file discovery: check the Ledger, approve if no conflict, wait if blocked.
+        `### Test creation (MANDATORY):
 ` +
-        `**After EACH phase completes, update the .pi/bulletin plan file:**
+        `For EVERY implementation step, also create tests:
 ` +
-        `- Check off completed files: change \`- [ ]\` to \`- [x]\` for done items
+        `- **Minimum:** at least 1 test per changed file (unit, integration, or e2e)
+` +
+        `- Unit tests for business logic, data transformations, edge cases
+` +
+        `- Integration tests for API routes, database operations
+` +
+        `- E2E tests for critical user flows (only if the change is user-facing)
+` +
+        `- Write tests alongside the implementation — do NOT defer to a separate step
+` +
+        `- If all 3 test types are overkill, create at least a unit test
+
+` +
+        `### After EACH phase completes:
+` +
+        `- Check off completed files in the .pi/bulletin plan: \`- [ ]\` → \`- [x]\`
 ` +
         `- Add any discovered (unplanned) files to the plan
-` +
-        `- If requirements changed mid-way: update the Requirements section but KEEP completed checkboxes
 ` +
         `- Update the timestamp
 
 ` +
-        `Unplanned file discovery: check the Ledger, approve if no conflict, wait if blocked.
-
-` +
         `## Step 4 — Verify
+` +
+        `Gatekeeper runs the FULL test suite — including tests created during implementation.
 ` +
         `Call \`summon_gatekeeper\` with { "phase": "baseline" } BEFORE any edits.
 ` +
