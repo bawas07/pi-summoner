@@ -48,11 +48,46 @@ export function registerCommands(pi: ExtensionAPI): void {
 ` +
         `### If a plan already exists:
 ` +
-        `- Skip Steps 1-2 entirely. The plan is already written and approved.
+        `Read the plan file carefully. It may be partially executed from a previous session.
 ` +
-        `- Jump directly to **Step 2d** — ask the user for trust mode.
+        `Do NOT skip analysis — reconcile the current state first.
+
 ` +
-        `- Then proceed to **Step 3** (Execute) using the existing plan.
+        `#### Reconciliation (MANDATORY):
+` +
+        `1. **Read every TODO in the checklist.** Note which are checked \`- [x]\` and which are \`- [ ]\`.
+` +
+        `2. **For items marked done \`- [x]\`:**
+` +
+        `   - Check if the code actually exists in the file. The checkbox may be stale.
+` +
+        `   - If code exists AND tests pass → keep as done.
+` +
+        `   - If code exists but no tests were run → run the tests. If passing, keep done.
+` +
+        `   - If checked but code is missing → mark back to \`- [ ]\` (stale).
+` +
+        `3. **For items NOT done \`- [ ]\`:**
+` +
+        `   - Read the current file state. Has it been partially implemented?
+` +
+        `   - If partially done: note what's missing vs what's there.
+` +
+        `4. **Check the Files to Modify table.** Cross-reference each file against actual code.
+` +
+        `5. **Build a gap report** — present to the user:
+` +
+        `   - ✅ Done (N items): <list>
+` +
+        `   - 🟢 Partially done (N items): <list with what's missing>
+` +
+        `   - ⏳ Not started (N items): <list>
+` +
+        `   - ❌ Stale checkboxes (N items): <list — checked but code missing>
+` +
+        `6. **Ask the user:** "Here's the current state. Should I continue with the remaining items, or update the plan?"
+` +
+        `7. After they confirm, ask for trust mode (Step 2d), then execute starting from the first incomplete item.
 
 ` +
         `### If no plan exists:

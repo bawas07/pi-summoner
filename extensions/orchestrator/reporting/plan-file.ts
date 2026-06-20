@@ -250,6 +250,78 @@ export interface PlanFileChange {
   change: string;
 }
 
+// ── Plan Parsing (for reconciliation) ───────────────────────────────────
+
+export interface ParsedTodo {
+  checked: boolean;
+  text: string;
+  file?: string;
+}
+
+export interface ParsedPlan {
+  taskName: string;
+  filesToModify: Array<{ path: string; change: string; done: boolean }>;
+  todos: ParsedTodo[];
+  doneCount: number;
+  totalCount: number;
+}
+
+/**
+ * Parse an existing plan file to extract TODOs and file status.
+ * Used for session continuation — understanding what's done vs remaining.
+ */
+export function parsePlanFile(content: string): ParsedPlan {
+  // Extract task name from header
+  const titleMatch = content.match(/^# Plan Request: (.+)$/m);
+  const taskName = titleMatch ? titleMatch[1].trim() : "Unknown";
+
+  // Extract todos from the TODO Checklist section
+  const todoSection = content.match(/## TODO Checklist\n\n([\s\S]*?)(?:\n---|\n> Generated|$)/);
+  const todos: ParsedTodo[] = [];
+
+  if (todoSection) {
+    const todoLines = todoSection[1].split("\n");
+    for (const line of todoLines) {
+      const match = line.match(/^- \[([ x])\] (.+)$/);
+      if (match) {
+        const checked = match[1] === "x";
+        const text = match[2].trim();
+        // Extract file path if present: `file.ts` — description
+        const fileMatch = text.match(/^`([^`]+)`/);
+        todos.push({
+          checked,
+          text,
+          file: fileMatch ? fileMatch[1] : undefined,
+        });
+      }
+    }
+  }
+
+  // Extract files from the Files to Modify table
+  const tableSection = content.match(/## Files to Modify\n\n\| File \| Change \|\n\|[| -]+\|\n([\s\S]*?)(?:\n\n|$)/);
+  const filesToModify: Array<{ path: string; change: string; done: boolean }> = [];
+
+  if (tableSection) {
+    const rows = tableSection[1].split("\n");
+    for (const row of rows) {
+      const match = row.match(/^\| `([^`]+)` \| (.+?)(?: ✅| 🟢| ❌)? \|$/);
+      if (match) {
+        const done = row.includes("✅");
+        filesToModify.push({
+          path: match[1].trim(),
+          change: match[2].trim(),
+          done,
+        });
+      }
+    }
+  }
+
+  const doneCount = todos.filter((t) => t.checked).length;
+  const totalCount = todos.length;
+
+  return { taskName, filesToModify, todos, doneCount, totalCount };
+}
+
 // ── Todo Update ──────────────────────────────────────────────────────────
 
 /**
