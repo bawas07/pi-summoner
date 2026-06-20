@@ -410,27 +410,77 @@ export function registerCommands(pi: ExtensionAPI): void {
         return;
       }
 
-      // Show live feed via a simple panel
-      // Full TUI takeover requires @earendil-works/pi-tui — for now, notify with current state
-      const activity = agentActivityLog.get(agentId);
-      if (activity) {
-        const icon =
-          activity.status === "active" ? "🟢" :
-          activity.status === "waiting" ? "🟡" :
-          activity.status === "done" ? "✅" :
-          activity.status === "failed" ? "❌" : "⏳";
+      // TUI takeover — full-screen live agent feed
+      await ctx.ui.custom<void>((_tui, theme, _keybindings, done) => {
+        const STATUS_ICONS: Record<string, string> = {
+          active: "🟢",
+          waiting: "🟡",
+          done: "✅",
+          failed: "❌",
+          pending: "⏳",
+        };
 
-        const lines = [
-          `Watch: ${agentName} (read-only)`,
-          `${icon} Status: ${activity.status}`,
-          activity.currentFile ? `   File: ${activity.currentFile}` : "",
-          activity.detail ? `   ${activity.detail}` : "",
-          "",
-          "Use /watch again to refresh, or continue working.",
-        ].filter(Boolean);
+        let disposed = false;
+        let interval: ReturnType<typeof setInterval> | null = null;
 
-        ctx.ui.notify(lines.join("\n"), "info");
-      }
+        const render = (_width: number): string[] => {
+          const activity = agentActivityLog.get(agentId);
+          const lines: string[] = [];
+
+          // Header
+          lines.push(`👁 Watch: ${agentName} (read-only)`);
+          lines.push("═".repeat(40));
+          lines.push("");
+
+          if (activity) {
+            const icon = STATUS_ICONS[activity.status] || "❓";
+            lines.push(`${icon} Status: ${activity.status}`);
+            if (activity.currentFile) {
+              lines.push(`   File: ${activity.currentFile}`);
+            }
+            if (activity.detail) {
+              lines.push(`   ${activity.detail}`);
+            }
+          } else {
+            lines.push("Agent no longer active.");
+          }
+
+          lines.push("");
+          lines.push("─".repeat(40));
+          lines.push("Press Esc to return to Main Agent.");
+
+          return lines;
+        };
+
+        // Start refresh interval
+        interval = setInterval(() => {
+          if (!disposed) {
+            // Invalidate causes the TUI to call render() again
+            // We rely on the component being re-rendered
+          }
+        }, 1000);
+
+        const component = {
+          render,
+          handleInput(data: string) {
+            if (data === "\x1b" || data === "\x03") {
+              // Escape or Ctrl+C — exit
+              disposed = true;
+              if (interval) clearInterval(interval);
+              done();
+            }
+          },
+          invalidate() {
+            // No cache to clear
+          },
+          dispose() {
+            disposed = true;
+            if (interval) clearInterval(interval);
+          },
+        };
+
+        return component;
+      });
     },
   });
 
