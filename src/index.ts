@@ -15,16 +15,24 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { evaluateTurn } from "./trigger";
 import { registerBuiltinAgents } from "./agents";
 import { initPlanFiles } from "./plan-file";
-import { handleTrigger, handleManualSummon, isAwaitingApproval } from "./orchestrator";
+import { handleTrigger, handleManualSummon, isAwaitingApproval, setNotifier, type Notifier } from "./orchestrator";
 
 // ---- 8.1 Entry point ----
 
 export default function (pi: ExtensionAPI): void {
+  // Wire notifier: use pi.sendUserMessage for user-visible messages
+  const chatNotifier: Notifier = {
+    info: (msg) => pi.sendUserMessage(`[summoner] ${msg}`),
+    warn: (msg) => pi.sendUserMessage(`[summoner] ⚠️ ${msg}`),
+    error: (msg) => pi.sendUserMessage(`[summoner] ❌ ${msg}`),
+  };
+  setNotifier(chatNotifier);
+
   // 8.4 Initialize on session start
   pi.on("session_start", async (_event, ctx) => {
     initPlanFiles(ctx.cwd);
     registerBuiltinAgents(pi);
-    ctx.ui.notify("Agent Summoner loaded — Scout | Crafter | Gatekeeper", "info");
+    console.log("[summoner] Agent Summoner loaded — Scout | Crafter | Gatekeeper");
   });
 
   // 8.2 Register /summoner command (manual override)
@@ -40,14 +48,16 @@ export default function (pi: ExtensionAPI): void {
     handler: async (args, ctx) => {
       const task = args.trim();
       if (!task) {
-        ctx.ui.notify(
+        // Commands don't have ctx.ui — use pi.sendUserMessage instead
+        pi.sendUserMessage(
           "Usage: /summoner <task description>\nExample: /summoner fix the login redirect bug",
-          "warn",
         );
         return;
       }
 
-      await handleManualSummon(task, pi, {
+      pi.sendUserMessage(`Summoning orchestrator for: ${task}`);
+
+      await handleManualSummon(task, {
         cwd: ctx.cwd,
       });
     },
@@ -62,7 +72,7 @@ export default function (pi: ExtensionAPI): void {
     // as an approval response instead of evaluating triggers
     if (isAwaitingApproval()) {
       const triggerResult = { needsScout: false, implementIntent: true };
-      await handleTrigger(triggerResult, message, pi, { cwd: ctx.cwd });
+      await handleTrigger(triggerResult, message, { cwd: ctx.cwd });
       return;
     }
 
@@ -79,7 +89,7 @@ export default function (pi: ExtensionAPI): void {
     }
 
     // 8.5 Wire into orchestrator
-    await handleTrigger(triggerResult, message, pi, {
+    await handleTrigger(triggerResult, message, {
       cwd: ctx.cwd,
     });
   });

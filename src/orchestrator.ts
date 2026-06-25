@@ -11,7 +11,6 @@
  * Phase 1: sequential-only, no tmux, hardcoded model, heuristics-based trigger.
  */
 
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import type {
   TriggerResult,
   PlanFile,
@@ -24,6 +23,25 @@ import * as ledger from "./ledger";
 import * as agents from "./agents";
 import type { SubprocessClient, RpcResponse } from "./rpc-client";
 import { spawnSubprocess } from "./rpc-client";
+
+// ---- Notification ----
+
+/** Lightweight notifier — index.ts wires this to pi.sendUserMessage or console */
+export interface Notifier {
+  info(msg: string): void;
+  warn(msg: string): void;
+  error(msg: string): void;
+}
+
+let notifier: Notifier = {
+  info: (m) => console.log(`[summoner] ${m}`),
+  warn: (m) => console.warn(`[summoner] ${m}`),
+  error: (m) => console.error(`[summoner] ${m}`),
+};
+
+export function setNotifier(n: Notifier): void {
+  notifier = n;
+}
 
 // ---- Orchestrator State ----
 
@@ -49,7 +67,6 @@ let currentRun: RunState | null = null;
 export async function handleTrigger(
   trigger: TriggerResult,
   task: string,
-  pi: ExtensionAPI,
   ctx: { cwd: string },
 ): Promise<void> {
   // If awaiting approval, check if this turn is the user's response
@@ -77,7 +94,7 @@ export async function handleTrigger(
 
   // Implement intent: start the heavy loop
   if (trigger.implementIntent) {
-    await startLoop(task, pi, ctx);
+    await startLoop(task, ctx);
   }
 }
 
@@ -85,7 +102,6 @@ export async function handleTrigger(
 
 export async function handleManualSummon(
   task: string,
-  pi: ExtensionAPI,
   ctx: { cwd: string },
 ): Promise<void> {
   // If awaiting approval, check if this turn is the user's response
@@ -97,22 +113,20 @@ export async function handleManualSummon(
 
   // If already in a run, warn
   if (currentRun && currentRun.plan) {
-    pi.ui.notify(
+    notifier.warn(
       `Already running plan: ${currentRun.plan.title}. Complete or abort it first.`,
-      "warn",
     );
     return;
   }
 
   // Force implementIntent = true, skip ambient trigger
-  await startLoop(task, pi, ctx);
+  await startLoop(task, ctx);
 }
 
 // ---- Internal: start the heavy loop ----
 
 async function startLoop(
   task: string,
-  pi: ExtensionAPI,
   ctx: { cwd: string },
 ): Promise<void> {
   // 7.4 Hard constraint: check for existing plan BEFORE anything else
@@ -120,11 +134,11 @@ async function startLoop(
 
   if (plan) {
     // Found existing plan — load it instead of drafting
-    pi.ui.notify(`Found existing plan: ${plan.title}`, "info");
+    notifier.info(`Found existing plan: ${plan.title}`);
   } else {
     // 7.1 Draft a new plan — with Scout context if available
     // GAP 3 FIX: Run Scout first to gather codebase context for the plan
-    pi.ui.notify("Scouting codebase for context...", "info");
+    notifier.info("Scouting codebase for context...");
     const scoutResult = await dispatchScout(
       `Gather context for: ${task}`,
       ctx.cwd,
@@ -134,19 +148,19 @@ async function startLoop(
   }
 
   // 7.2 Present for approval + set trust mode
-  const approval = await requestApproval(plan, pi);
+  const approval = await requestApproval(plan);
   if (!approval.approved) {
     if (approval.feedback) {
       // User wants revisions — redraft
       plan = await draftPlan(`${task}\n\nFeedback: ${approval.feedback}`, null, ctx.cwd);
-      const reApproval = await requestApproval(plan, pi);
+      const reApproval = await requestApproval(plan);
       if (!reApproval.approved) {
-        pi.ui.notify("Plan rejected. Aborting.", "error");
+        notifier.error("Plan rejected. Aborting.");
         return;
       }
       plan.trustMode = reApproval.trustMode;
     } else {
-      pi.ui.notify("Plan rejected. Aborting.", "error");
+      notifier.error("Plan rejected. Aborting.");
       return;
     }
   } else {
@@ -165,14 +179,14 @@ async function startLoop(
   };
 
   // 7.3 Execute steps sequentially
-  await executeSteps(pi, ctx);
+  await executeSteps(ctx);
 
   // 7.5 Always run Gatekeeper after all steps
-  await runGatekeeper(pi, ctx);
+  await runGatekeeper(ctx);
 
   // 7.6 Archive on completion
   await planFile.archive(plan.path);
-  pi.ui.notify(`Task complete! Plan archived: ${plan.title}`, "info");
+  notifier.info(`Task complete! Plan archived: ${plan.title}`);
 
   // Reset state
   currentRun = null;
@@ -236,20 +250,18 @@ interface ApprovalResult {
  */
 async function requestApproval(
   plan: PlanFile,
-  pi: ExtensionAPI,
 ): Promise<ApprovalResult> {
   const stepList = plan.steps
     .map((s, i) => `  ${i + 1}. [${s.done ? "x" : " "}] ${s.description}`)
     .join("\n");
 
-  pi.ui.notify(
+  notifier.info(
     `📋 **Plan: ${plan.title}**\n\n` +
       `${stepList}\n\n` +
       `Reply with:\n` +
       `  "go" or "trust" — approve with 🙈 trust mode (auto-proceed)\n` +
       `  "step" or "check" — approve with 🔍 checkpoint mode (confirm each step)\n` +
       `  "no" or describe changes — reject/revise`,
-    "info",
   );
 
   // GAP 4: Return a promise that resolves when the user responds.
@@ -312,7 +324,6 @@ function parseApprovalResponse(message: string): ApprovalResult {
  * Previously-touched files are included in the prompt context.
  */
 async function executeSteps(
-  pi: ExtensionAPI,
   ctx: { cwd: string },
 ): Promise<void> {
   if (!currentRun?.plan) return;
@@ -327,9 +338,8 @@ async function executeSteps(
 
     // Checkpoint mode: pause and wait for user
     if (currentRun.trustMode === "checkpoint" && i > 0) {
-      pi.ui.notify(
+      notifier.info(
         `🔍 Step ${i + 1}/${plan.steps.length}: ${step.description}\nProceed? Reply "go" or "skip".`,
-        "info",
       );
       // In checkpoint mode, the orchestrator pauses here.
       // The user's next message is captured by the approval flow.
@@ -366,11 +376,10 @@ async function executeSteps(
       await planFile.checkOffStep(plan.path, i);
       ledger.recordTouch(plan.path, `crafter-${i + 1}`, "write");
 
-      pi.ui.notify(`✓ Step ${i + 1} complete: ${step.description}`, "info");
+      notifier.info(`✓ Step ${i + 1} complete: ${step.description}`);
     } catch (err) {
-      pi.ui.notify(
+      notifier.error(
         `✗ Step ${i + 1} failed: ${err instanceof Error ? err.message : String(err)}`,
-        "error",
       );
       throw err;
     } finally {
@@ -419,7 +428,6 @@ async function dispatchScout(task: string, _cwd: string): Promise<string | null>
  * Gatekeeper's RPC response instead of returning an empty array.
  */
 async function runGatekeeper(
-  pi: ExtensionAPI,
   ctx: { cwd: string },
 ): Promise<void> {
   const gatekeeperDef = agents.getAgent("gatekeeper");
@@ -427,7 +435,7 @@ async function runGatekeeper(
     throw new Error("Gatekeeper agent not registered");
   }
 
-  pi.ui.notify("Gatekeeper reviewing...", "info");
+  notifier.info("Gatekeeper reviewing...");
 
   const client = spawnSubprocess(
     gatekeeperDef.defaultModel,
@@ -448,24 +456,22 @@ async function runGatekeeper(
     for (const finding of findings) {
       if (finding.inScope) {
         // In-scope: auto-dispatch Crafter to fix, no user approval needed
-        pi.ui.notify(
+        notifier.warn(
           `Gatekeeper found (in-scope): ${finding.description}\nDispatching Crafter to fix...`,
-          "warn",
         );
         await dispatchCrafterFix(finding, ctx.cwd);
       } else {
         // Out-of-scope: ask user
-        pi.ui.notify(
+        notifier.warn(
           `Gatekeeper found (out-of-scope, pre-existing): ${finding.description}\n` +
             `This was not caused by this task. Type "fix it" to address, or ignore.`,
-          "warn",
         );
         // In Phase 1, leave it for the user to decide on next turn
       }
     }
 
     if (findings.length === 0) {
-      pi.ui.notify("Gatekeeper: all clear ✓", "info");
+      notifier.info("Gatekeeper: all clear ✓");
     }
   } finally {
     await client.terminate();
