@@ -36,10 +36,10 @@ export interface AgentDefinition {
   name: string;
   /** LLM-readable system prompt for the sub-agent */
   systemPrompt: string;
-  /** Hardcoded default model (Phase 1; Phase 2 adds get_available_models) */
-  defaultModel: ModelRef;
-  /** Default thinking level at spawn */
-  defaultThinking: ThinkingLevel;
+  /** Model for subprocess spawn (Phase 2). Not used in Phase 1. */
+  defaultModel?: ModelRef;
+  /** Thinking level for subprocess spawn (Phase 2). Not used in Phase 1. */
+  defaultThinking?: ThinkingLevel;
   /** Tools available to this agent. Gatekeeper's excludes write/edit — architectural enforcement. */
   tools: ToolName[];
   /** true for Scout (read-only, low risk), false for Crafter/Gatekeeper */

@@ -17,8 +17,6 @@ import { constants } from "node:fs";
 import type {
   AgentDefinition,
   AgentInstance,
-  ModelRef,
-  ThinkingLevel,
 } from "./types";
 
 // ---- In-memory registry ----
@@ -26,11 +24,6 @@ import type {
 const agentDefs = new Map<string, AgentDefinition>();
 const agentInstances = new Map<string, AgentInstance>();
 let instanceCounter = 0;
-
-const DEFAULT_MODEL: ModelRef = {
-  provider: "anthropic",
-  modelId: "claude-sonnet-4-5",
-};
 
 // ---- 4.1 registerAgent() ----
 
@@ -57,8 +50,8 @@ export function registerAgent(
       const instance: AgentInstance = {
         id: instanceId,
         role: def.name,
-        model: def.defaultModel,
-        thinking: def.defaultThinking,
+        model: def.defaultModel ?? { provider: "", modelId: "" },
+        thinking: def.defaultThinking ?? "off",
         status: "working",
         task: params.task,
         windowName: `${def.name}-${instanceCounter}`,
@@ -204,8 +197,6 @@ export function registerBuiltinAgents(pi: ExtensionAPI): void {
   registerAgent(pi, {
     name: "scout",
     systemPrompt: SCOUT_PROMPT,
-    defaultModel: DEFAULT_MODEL,
-    defaultThinking: "minimal",
     tools: ["read", "bash", "grep", "find"],
     canDispatchWithoutApproval: true,
   }, scoutExecute);
@@ -213,8 +204,6 @@ export function registerBuiltinAgents(pi: ExtensionAPI): void {
   registerAgent(pi, {
     name: "crafter",
     systemPrompt: CRAFTER_PROMPT,
-    defaultModel: DEFAULT_MODEL,
-    defaultThinking: "medium",
     tools: ["read", "write", "edit", "bash"],
     canDispatchWithoutApproval: false,
   }, crafterExecute);
@@ -222,8 +211,6 @@ export function registerBuiltinAgents(pi: ExtensionAPI): void {
   registerAgent(pi, {
     name: "gatekeeper",
     systemPrompt: GATEKEEPER_PROMPT,
-    defaultModel: DEFAULT_MODEL,
-    defaultThinking: "medium",
     tools: ["read", "bash", "grep", "find"],
     canDispatchWithoutApproval: false,
   }, gatekeeperExecute);
