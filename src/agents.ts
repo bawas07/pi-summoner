@@ -98,12 +98,9 @@ export function registerAgent(
   });
 }
 
-// ---- Scout: actually searches the codebase ----
+// ---- Scout: tight, scannable codebase search ----
 
 async function scoutExecute(task: string, ctx: { cwd: string }): Promise<string> {
-  const results: string[] = [];
-
-  // Search for relevant files by grepping for keywords
   const keywords = task
     .toLowerCase()
     .split(/\s+/)
@@ -111,11 +108,12 @@ async function scoutExecute(task: string, ctx: { cwd: string }): Promise<string>
     .slice(0, 5);
 
   if (keywords.length === 0) {
-    return "Scout: No searchable keywords found in task description. Try a more specific query.";
+    return "Scout: No searchable keywords. Try a more specific query.";
   }
 
-  // Scan src/ and lib/ directories for relevant files
   const searchDirs = ["src", "lib", "app", "components", "utils", "services"];
+  const found: string[] = [];
+
   for (const dir of searchDirs) {
     const fullPath = join(ctx.cwd, dir);
     try {
@@ -126,93 +124,63 @@ async function scoutExecute(task: string, ctx: { cwd: string }): Promise<string>
           keywords.some((kw) => f.toLowerCase().includes(kw)) &&
           /\.[tj]sx?$/.test(f),
         )
-        .slice(0, 10);
+        .slice(0, 5); // tighter: 5 files per dir max
 
       for (const file of matching) {
         const filePath = join(fullPath, file);
         try {
           const content = await readFile(filePath, "utf8");
           const lines = content.split("\n");
-          // Find lines mentioning keywords
-          const relevantLines: string[] = [];
-          for (let i = 0; i < lines.length; i++) {
+          const hits: string[] = [];
+          for (let i = 0; i < lines.length && hits.length < 3; i++) {
             if (keywords.some((kw) => lines[i].toLowerCase().includes(kw))) {
-              relevantLines.push(`  L${i + 1}: ${lines[i].trim().slice(0, 120)}`);
+              hits.push(`L${i + 1}: ${lines[i].trim().slice(0, 80)}`);
             }
           }
-          if (relevantLines.length > 0) {
-            const relPath = relative(ctx.cwd, filePath);
-            results.push(
-              `**${relPath}** (${relevantLines.length} matches):\n${relevantLines.slice(0, 5).join("\n")}`,
-            );
+          if (hits.length > 0) {
+            found.push(`${relative(ctx.cwd, filePath)} — ${hits.join(" | ")}`);
           }
-        } catch {
-          // Skip unreadable files
-        }
+        } catch { /* skip */ }
       }
-    } catch {
-      // Directory doesn't exist — skip
-    }
+    } catch { /* dir missing */ }
+
+    if (found.length >= 8) break; // enough results
   }
 
-  if (results.length === 0) {
-    return `Scout: No codebase matches found for: ${keywords.join(", ")}. Searched: ${searchDirs.join(", ")}.`;
+  if (found.length === 0) {
+    return `Scout: nothing found for "${keywords.join(" ")}" in ${searchDirs.join(", ")}.`;
   }
 
-  return `Scout results (${results.length} files found):\n\n${results.join("\n\n")}`;
+  return found.slice(0, 8).join("\n");
 }
 
 // ---- Crafter: returns a structured implementation prompt ----
 
 async function crafterExecute(task: string, _ctx: { cwd: string }): Promise<string> {
-  return `Crafter: Ready to implement.
-
-**Task:** ${task}
-
-**Instructions for Main Agent:**
-- Read the relevant files to understand current code
-- Make focused, atomic edits using write/edit tools
-- Wrap all file writes in withFileMutationQueue
-- Report what was changed and why
-- If changes have wide impact, flag it before proceeding
-
-Proceed with implementation.`;
+  return `Crafter: implement this — ${task}`;
 }
 
 // ---- Gatekeeper: runs basic verification ----
 
 async function gatekeeperExecute(task: string, ctx: { cwd: string }): Promise<string> {
   const findings: string[] = [];
-
-  // Check for obvious issues in the codebase
   const filePattern = /[\w\/.-]+\.(ts|js|tsx|jsx)$/;
   const mentionedFiles = task.match(new RegExp(filePattern, "g"));
 
   if (mentionedFiles) {
-    for (const file of mentionedFiles) {
+    for (const file of mentionedFiles.slice(0, 10)) {
       const fullPath = resolve(ctx.cwd, file);
       try {
         await access(fullPath, constants.R_OK);
         const content = await readFile(fullPath, "utf8");
-
-        // Basic checks
-        if (content.includes("console.log(")) {
-          findings.push(`FINDING: ${file} contains console.log statements — consider removing for production`);
-        }
-        if (content.includes("TODO") || content.includes("FIXME")) {
-          findings.push(`FINDING: ${file} contains TODO/FIXME markers — follow up needed`);
-        }
-      } catch {
-        findings.push(`FINDING: OUT-OF-SCOPE: ${file} — file not found or unreadable (pre-existing)`);
-      }
+        if (content.includes("console.log(")) findings.push(`${file}: console.log`);
+        if (content.includes("TODO") || content.includes("FIXME")) findings.push(`${file}: TODO/FIXME`);
+      } catch { /* pre-existing, skip */ }
     }
   }
 
-  if (findings.length === 0) {
-    return "Gatekeeper: No issues found. All clear ✓";
-  }
-
-  return `Gatekeeper findings:\n\n${findings.join("\n")}`;
+  if (findings.length === 0) return "Gatekeeper: all clear";
+  return findings.join("\n");
 }
 
 // ---- 4.2 Built-in agent definitions ----
