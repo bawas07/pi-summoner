@@ -24,24 +24,11 @@ import * as agents from "./agents";
 import type { SubprocessClient, RpcResponse } from "./rpc-client";
 import { spawnSubprocess } from "./rpc-client";
 
-// ---- Notification ----
+// ---- Logging ----
 
-/** Lightweight notifier — index.ts wires this to pi.sendUserMessage or console */
-export interface Notifier {
-  info(msg: string): void;
-  warn(msg: string): void;
-  error(msg: string): void;
-}
-
-let notifier: Notifier = {
-  info: (m) => console.log(`[summoner] ${m}`),
-  warn: (m) => console.warn(`[summoner] ${m}`),
-  error: (m) => console.error(`[summoner] ${m}`),
-};
-
-export function setNotifier(n: Notifier): void {
-  notifier = n;
-}
+function log(msg: string): void { console.log(`[summoner] ${msg}`); }
+function warn(msg: string): void { console.warn(`[summoner] ${msg}`); }
+function err(msg: string): void { console.error(`[summoner] ${msg}`); }
 
 // ---- Orchestrator State ----
 
@@ -113,7 +100,7 @@ export async function handleManualSummon(
 
   // If already in a run, warn
   if (currentRun && currentRun.plan) {
-    notifier.warn(
+    warn(
       `Already running plan: ${currentRun.plan.title}. Complete or abort it first.`,
     );
     return;
@@ -134,11 +121,11 @@ async function startLoop(
 
   if (plan) {
     // Found existing plan — load it instead of drafting
-    notifier.info(`Found existing plan: ${plan.title}`);
+    log(`Found existing plan: ${plan.title}`);
   } else {
     // 7.1 Draft a new plan — with Scout context if available
     // GAP 3 FIX: Run Scout first to gather codebase context for the plan
-    notifier.info("Scouting codebase for context...");
+    log("Scouting codebase for context...");
     const scoutResult = await dispatchScout(
       `Gather context for: ${task}`,
       ctx.cwd,
@@ -155,12 +142,12 @@ async function startLoop(
       plan = await draftPlan(`${task}\n\nFeedback: ${approval.feedback}`, null, ctx.cwd);
       const reApproval = await requestApproval(plan);
       if (!reApproval.approved) {
-        notifier.error("Plan rejected. Aborting.");
+        err("Plan rejected. Aborting.");
         return;
       }
       plan.trustMode = reApproval.trustMode;
     } else {
-      notifier.error("Plan rejected. Aborting.");
+      err("Plan rejected. Aborting.");
       return;
     }
   } else {
@@ -186,7 +173,7 @@ async function startLoop(
 
   // 7.6 Archive on completion
   await planFile.archive(plan.path);
-  notifier.info(`Task complete! Plan archived: ${plan.title}`);
+  log(`Task complete! Plan archived: ${plan.title}`);
 
   // Reset state
   currentRun = null;
@@ -255,7 +242,7 @@ async function requestApproval(
     .map((s, i) => `  ${i + 1}. [${s.done ? "x" : " "}] ${s.description}`)
     .join("\n");
 
-  notifier.info(
+  log(
     `📋 **Plan: ${plan.title}**\n\n` +
       `${stepList}\n\n` +
       `Reply with:\n` +
@@ -338,7 +325,7 @@ async function executeSteps(
 
     // Checkpoint mode: pause and wait for user
     if (currentRun.trustMode === "checkpoint" && i > 0) {
-      notifier.info(
+      log(
         `🔍 Step ${i + 1}/${plan.steps.length}: ${step.description}\nProceed? Reply "go" or "skip".`,
       );
       // In checkpoint mode, the orchestrator pauses here.
@@ -376,9 +363,9 @@ async function executeSteps(
       await planFile.checkOffStep(plan.path, i);
       ledger.recordTouch(plan.path, `crafter-${i + 1}`, "write");
 
-      notifier.info(`✓ Step ${i + 1} complete: ${step.description}`);
+      log(`✓ Step ${i + 1} complete: ${step.description}`);
     } catch (err) {
-      notifier.error(
+      err(
         `✗ Step ${i + 1} failed: ${err instanceof Error ? err.message : String(err)}`,
       );
       throw err;
@@ -435,7 +422,7 @@ async function runGatekeeper(
     throw new Error("Gatekeeper agent not registered");
   }
 
-  notifier.info("Gatekeeper reviewing...");
+  log("Gatekeeper reviewing...");
 
   const client = spawnSubprocess(
     gatekeeperDef.defaultModel,
@@ -456,13 +443,13 @@ async function runGatekeeper(
     for (const finding of findings) {
       if (finding.inScope) {
         // In-scope: auto-dispatch Crafter to fix, no user approval needed
-        notifier.warn(
+        warn(
           `Gatekeeper found (in-scope): ${finding.description}\nDispatching Crafter to fix...`,
         );
         await dispatchCrafterFix(finding, ctx.cwd);
       } else {
         // Out-of-scope: ask user
-        notifier.warn(
+        warn(
           `Gatekeeper found (out-of-scope, pre-existing): ${finding.description}\n` +
             `This was not caused by this task. Type "fix it" to address, or ignore.`,
         );
@@ -471,7 +458,7 @@ async function runGatekeeper(
     }
 
     if (findings.length === 0) {
-      notifier.info("Gatekeeper: all clear ✓");
+      log("Gatekeeper: all clear ✓");
     }
   } finally {
     await client.terminate();

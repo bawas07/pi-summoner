@@ -6,38 +6,17 @@
  *   - turn_start hook for ambient trigger evaluation
  *   - Built-in agents (Scout, Crafter, Gatekeeper) as summon_* tools
  *
- * Phase 1: core loop, RPC subprocesses, plan files, Ledger.
- * Phase 2 (deferred): tmux, incantation, model assignment.
- * Phase 3 (deferred): code-quality Gatekeeper, crash recovery.
+ * Phase 1: core loop with functional tools (no subprocess spawn).
+ * Phase 2 (deferred): tmux, incantation, model assignment, real RPC subprocesses.
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { evaluateTurn } from "./trigger";
 import { registerBuiltinAgents } from "./agents";
 import { initPlanFiles } from "./plan-file";
-import { handleTrigger, handleManualSummon, isAwaitingApproval, setNotifier, type Notifier } from "./orchestrator";
-
-// ---- 8.1 Entry point ----
+import { handleManualSummon, handleTrigger, isAwaitingApproval } from "./orchestrator";
 
 export default function (pi: ExtensionAPI): void {
-  // Wire notifier: console for debug, pi.sendUserMessage with followUp for chat.
-  // Must use streamingBehavior: 'followUp' to avoid "Agent is already processing".
-  const chatNotifier: Notifier = {
-    info: (msg) => {
-      console.log(`[summoner] ${msg}`);
-      pi.sendUserMessage(`[summoner] ${msg}`, { streamingBehavior: "followUp" });
-    },
-    warn: (msg) => {
-      console.warn(`[summoner] ${msg}`);
-      pi.sendUserMessage(`[summoner] ⚠️ ${msg}`, { streamingBehavior: "followUp" });
-    },
-    error: (msg) => {
-      console.error(`[summoner] ${msg}`);
-      pi.sendUserMessage(`[summoner] ❌ ${msg}`, { streamingBehavior: "followUp" });
-    },
-  };
-  setNotifier(chatNotifier);
-
   // 8.4 Initialize on session start
   pi.on("session_start", async (_event, ctx) => {
     initPlanFiles(ctx.cwd);
@@ -48,7 +27,7 @@ export default function (pi: ExtensionAPI): void {
   // 8.2 Register /summoner command (manual override)
   pi.registerCommand("summoner", {
     description:
-      "Summon the orchestrator for a task (manual override). Use for explicit task dispatch.",
+      "Summon the orchestrator for a task. Starts the plan→approve→execute→verify loop.",
     getArgumentCompletions: (prefix) => {
       const completions = ["scout", "crafter", "gatekeeper"];
       return completions
@@ -58,21 +37,12 @@ export default function (pi: ExtensionAPI): void {
     handler: async (args, ctx) => {
       const task = args.trim();
       if (!task) {
-        pi.sendUserMessage(
-          "Usage: /summoner <task description>\nExample: /summoner fix the login redirect bug",
-          { streamingBehavior: "followUp" },
-        );
+        console.warn("[summoner] /summoner called without task");
         return;
       }
 
-      pi.sendUserMessage(
-        `Summoning orchestrator for: ${task}`,
-        { streamingBehavior: "followUp" },
-      );
-
-      await handleManualSummon(task, {
-        cwd: ctx.cwd,
-      });
+      console.log(`[summoner] Manual summon: ${task}`);
+      await handleManualSummon(task, { cwd: ctx.cwd });
     },
   });
 
@@ -82,42 +52,31 @@ export default function (pi: ExtensionAPI): void {
     if (!message) return;
 
     // If orchestrator is awaiting user approval, route this message
-    // as an approval response instead of evaluating triggers
     if (isAwaitingApproval()) {
-      const triggerResult = { needsScout: false, implementIntent: true };
-      await handleTrigger(triggerResult, message, { cwd: ctx.cwd });
+      await handleTrigger(
+        { needsScout: false, implementIntent: true },
+        message,
+        { cwd: ctx.cwd },
+      );
       return;
     }
 
-    // Normal trigger evaluation for ambient detection
+    // Normal trigger evaluation
     const triggerResult = evaluateTurn({
       message,
       recentHistory: [],
       currentPhase: undefined,
     });
 
-    // Only proceed if there's something to do
-    if (!triggerResult.needsScout && !triggerResult.implementIntent) {
-      return;
-    }
+    if (!triggerResult.needsScout && !triggerResult.implementIntent) return;
 
-    // 8.5 Wire into orchestrator
-    await handleTrigger(triggerResult, message, {
-      cwd: ctx.cwd,
-    });
+    await handleTrigger(triggerResult, message, { cwd: ctx.cwd });
   });
 }
 
 // ---- Helpers ----
 
-/**
- * Extract the latest user message from the turn context.
- *
- * The exact shape of the turn_start event data depends on pi's API.
- * This function safely extracts whatever is available.
- */
 function extractLatestMessage(ctx: Record<string, unknown>): string | null {
-  // Try common patterns for where pi puts the latest message
   if (typeof ctx.message === "string") return ctx.message;
   if (
     ctx.turn &&
@@ -130,6 +89,5 @@ function extractLatestMessage(ctx: Record<string, unknown>): string | null {
   }
   if (ctx.text && typeof ctx.text === "string") return ctx.text;
   if (ctx.content && typeof ctx.content === "string") return ctx.content;
-
   return null;
 }
