@@ -1,192 +1,153 @@
-# FLOW — System Mechanics & State Machine
+# /summoner — Flow
 
-This document covers the actual mechanics: how the Ledger works, how phases get built and executed, how unplanned discoveries are handled, and where the approval gates sit. See `prd.md` for the why, `todo.md` for implementation tracking.
+> Adapted from the standard Flow template: `/summoner` has no pages or navigation in the usual sense — it's a CLI extension orchestrating subprocesses. "Page list" and "navigation structure" are replaced below with the equivalent for this kind of system: a surface list (what the user actually sees/interacts with) and the overall process flow. Each subsequent section is a Mermaid diagram of one significant flow, same as a normal Flow doc.
 
-## 1. End-to-End Flow
+## Surfaces
 
-```mermaid
-flowchart TD
-    A[User submits task] --> B[Summon Scout]
-    B --> C[Scout builds AST-level dependency graph]
-    C --> D[Main Agent topologically sorts graph into Phases]
-    D --> E[Main Agent presents Plan + asks Trust Mode]
-    E -->|User rejects / requests changes| D
-    E -->|User approves| F[Execute Phase 1]
-    F --> G{More phases?}
-    G -->|Yes| H[Execute next Phase]
-    H --> G
-    G -->|No, all phases done| I[Summon Gatekeeper: full test suite]
-    I --> J{Failures?}
-    J -->|No failures| K[Synthesize final report from Ledger]
-    J -->|Failures in in-scope files| L{Trust Mode?}
-    L -->|Yolo| M[Auto-fix via Crafter, re-test]
-    L -->|Checkpoint| N[Ask user before fixing]
-    M --> I
-    N -->|Approved| M
-    J -->|Failures in out-of-scope files| O[Always ask user: pre-existing or caused by us?]
-    O --> K
-    K --> P[Report shown to user]
-```
+What the user actually sees or touches, in place of a page list.
 
-## 2. The Ledger
-
-The Ledger is owned exclusively by Main Agent. It's the single source of truth for file state, and it doubles as the data the final report is generated from — there's no separate "reporting" step, Main Agent just walks the Ledger at the end.
-
-### 2.1 Structure
-
-```json
-{
-  "currentPhase": 2,
-  "totalPhases": 3,
-  "files": {
-    "lib/api.js": {
-      "status": "done",
-      "phase": 1,
-      "owner": "crafter-1",
-      "summary": "updated response parsing for new BE format"
-    },
-    "dashboard.js": {
-      "status": "in_progress",
-      "phase": 2,
-      "owner": "crafter-2"
-    },
-    "settings.js": {
-      "status": "pending",
-      "phase": 2,
-      "owner": null
-    }
-  }
-}
-```
-
-### 2.2 File Status Lifecycle
-
-```mermaid
-stateDiagram-v2
-    [*] --> pending: added to ledger (planned or discovered)
-    pending --> in_progress: Crafter starts work, phase gate open
-    in_progress --> done: Crafter finishes, reports summary
-    in_progress --> blocked: dependency not yet done
-    blocked --> pending: blocking dependency resolves
-    done --> [*]
-```
-
-A file can only move to `in_progress` if its phase's gate is open (i.e., all prior phases are fully `done`). This is the mechanism that prevents two Crafters from touching files with an unresolved dependency between them.
-
-## 3. Dependency Graph → Phases
-
-This is the part that justifies the "slower is faster" tradeoff — Scout does real AST parsing (not just grep) before Main Agent commits to a plan, because misjudging a dependency here means discovering a conflict mid-execution instead of on paper.
-
-### 3.1 Example
-
-Task: "Update BE response format — affects API layer and dashboard."
-
-Scout returns:
-
-```json
-{
-  "graph": {
-    "lib/api.js": { "exports": ["fetchDashboard", "fetchSettings"], "importedBy": ["dashboard.js", "settings.js"] },
-    "dashboard.js": { "imports": ["lib/api.js"], "importedBy": [] },
-    "settings.js": { "imports": ["lib/api.js"], "importedBy": [] }
-  }
-}
-```
-
-Main Agent topologically sorts this into phases:
-
-```mermaid
-flowchart LR
-    subgraph Phase1["Phase 1"]
-        A[lib/api.js]
-    end
-    subgraph Phase2["Phase 2 — parallel safe"]
-        B[dashboard.js]
-        C[settings.js]
-    end
-    subgraph Phase3["Phase 3"]
-        D[Gatekeeper: full test suite]
-    end
-    A --> B
-    A --> C
-    B --> D
-    C --> D
-```
-
-`dashboard.js` and `settings.js` both depend on `lib/api.js`, but not on each other — so they land in the same phase and run in parallel safely. This is the general rule: **same phase = parallel-safe by construction**, because anything with a dependency relationship is forced into different phases by the topological sort.
-
-### 3.2 Dependency installs as Phase 0
-
-When a task requires new dependencies, that becomes its own early phase — every other Crafter in later phases waits, since nothing should start using a package before it's actually installed.
-
-```mermaid
-flowchart TD
-    P0[Phase 0: Crafter-A installs dependencies] --> P1[Phase 1: core module changes]
-    P1 --> P2[Phase 2: consumer module changes, parallel-safe]
-    P2 --> P3[Phase 3: Gatekeeper verifies]
-```
-
-## 4. Unplanned Discovery — The "Surveyor and the Builder" Model
-
-Scout's dependency graph is built from static analysis and can miss things — dynamic imports, string-based requires, things genuinely hidden until an agent is in the file with hands on the code. The analogy: a surveyor can map a plot of land perfectly and still miss a rock buried under the soil. The builder finds it the moment they start digging.
-
-**Decision: trust the agent that found it. Don't re-dispatch Scout to confirm.** Re-scanning to verify something the Crafter already directly observed is a redundant round-trip — the field report is already better information than what Scout could re-derive from a distance.
-
-### 4.1 The "richer report" mechanism
-
-The one refinement on top of pure trust: when Crafter reports an unplanned file, it includes not just the file itself but what *that file* imports too — a one-hop lookahead. This costs nothing extra (Crafter already has the file open to know it's relevant), but gives Main Agent enough information to catch a second-order conflict before it happens, rather than finding out about it three minutes later from a different agent.
-
-```mermaid
-sequenceDiagram
-    participant C as Crafter-1
-    participant M as Main Agent (Ledger)
-    participant C2 as Crafter-2 (elsewhere)
-
-    C->>C: Editing dashboard.js, discovers legacyChart.js needed
-    C->>C: Opens legacyChart.js, notes its imports
-    C->>M: Report: "need legacyChart.js, it imports chartUtils.js"
-    M->>M: Check Ledger — is chartUtils.js in_progress elsewhere?
-    alt No conflict
-        M->>C: Approved — add to current phase, proceed
-    else Conflict (Crafter-2 already touching chartUtils.js)
-        M->>C: Wait
-        C2->>M: Reports done with chartUtils.js
-        M->>C: Cleared to proceed — re-read file fresh first
-    end
-```
-
-### 4.2 Why re-read after waiting, even with trust
-
-If Crafter had to wait because another agent was mid-edit on a related file, it must **re-read the file's current state before proceeding** — never assume the old read is still valid. The other agent's change might have already covered what Crafter needed, or changed the surrounding context enough that the original plan needs adjusting.
-
-## 5. Approval Gates
-
-There are exactly two points where the system always stops for a human decision, regardless of trust mode:
-
-1. **Plan approval** (before any execution starts) — paired with the trust-mode question, asked per task.
-2. **Out-of-scope test failures** — if Gatekeeper finds a failure in a file nobody on the task touched or planned to touch, Main Agent always asks: was this already broken, or did we cause it? Trust mode does not override this gate, because auto-deciding scope creep is a different risk category than auto-fixing something already in plan.
-
-Everything else (in-scope fixes, phase transitions, unplanned-but-related file additions) is governed by trust mode as described in `prd.md` §5.1.
-
-## 6. Watch Mode Mechanics
-
-```mermaid
-flowchart LR
-    M[Main Agent view] -->|/watch crafter-1| W[Read-only live feed: Crafter-1]
-    W -->|Esc or /back| M
-    W -.->|no input channel| X[Crafter-1 keeps working unaffected]
-```
-
-Watching never pauses or redirects the agent being watched. If the user wants to change something, they return to Main Agent and issue the instruction there — Main Agent is the only thing permitted to write to the Ledger or alter a running plan.
-
-## 7. Summary Table — Who Can Do What, When
-
-| Action | Trust mode (🙈) | Checkpoint mode (🔍) |
+| Surface | Where | Purpose |
 |---|---|---|
-| Plan approval | Required | Required |
-| Phase transition | Silent | Brief notification |
-| Unplanned file discovery (no conflict) | Auto-proceed, logged | Ask before proceeding |
-| Unplanned file discovery (conflict, must wait) | Auto-wait, logged | Ask before proceeding |
-| In-scope test failure | Auto-fix + re-test | Ask before fixing |
-| Out-of-scope test failure | **Always ask** | **Always ask** |
-| Final report | Always shown | Always shown |
+| Main Agent conversation | tmux window 0 | Primary interface — task input, plan presentation, approvals, incantations, status widget |
+| Status widget | Top of window 0, alongside Main Agent | At-a-glance view of all active/queued/done agents |
+| Sub-agent tmux window | `crafter-*`, `scout-*`, `gatekeeper-*` windows | Live, read-only view of one agent's actual work (via `/watch`) |
+| Plan file | `docs/tasks/{timestamp}-{title}.md` | Persisted checklist, glanceable outside the chat entirely; moves to `archived/` on completion |
+
+## Overall process flow (v3 — ambient triggering)
+
+No single `Start` node anymore — Main Agent is continuously evaluating every conversation turn against two independent triggers. `/summoner <task>` still exists as a manual override that jumps straight to the "draft/load plan" step, bypassing the ambient check.
+
+```mermaid
+flowchart TD
+    Turn([New message in conversation]) --> NeedScout{Need codebase info?}
+    NeedScout -->|Yes, any time| Scout[Dispatch Scout - no approval, no timing restriction]
+    NeedScout -->|No| Intent
+    Scout --> Report1[Scout reports back]
+    Report1 --> Intent{User indicating intent to implement?}
+    Intent -->|No - just discussing| Continue([Continue conversation normally])
+    Intent -->|Yes| ExistingPlan{Plan already exists for this?}
+    ExistingPlan -->|Yes - user's own, or from earlier session| Load[Main Agent loads existing plan file]
+    ExistingPlan -->|No| Draft[Main Agent drafts new plan, writes plan file]
+    Load --> Approve
+    Draft --> Approve{User approves plan?}
+    Approve -->|Adjust| Draft
+    Approve -->|Yes - sets trust mode too| Loop[Summon next agent for next step]
+    Loop --> Work[Agent works in its own tmux window]
+    Work --> Report2[Agent reports back to Main Agent]
+    Report2 --> Ledger[Main Agent updates Ledger + checks off plan file step]
+    Ledger --> More{More steps remaining?}
+    More -->|Checkpoint mode| Confirm[Check in with user before continuing]
+    Confirm --> Loop
+    More -->|Trust mode| Loop
+    More -->|No| Gatekeeper[Summon Gatekeeper - always runs]
+    Gatekeeper --> Archive[Plan file moved to archived/]
+    Archive --> Done([Task complete])
+```
+
+## Flow: Scout's ambient trigger
+
+Scout's trigger has no timing restriction — this can fire at any point shown below, independent of whatever else is happening (including mid-Crafter-work).
+
+```mermaid
+flowchart TD
+    A([Start of a fresh topic]) --> S[Dispatch Scout]
+    B([Mid-discussion, new info need surfaces]) --> S
+    C([Mid-task, Crafter/Gatekeeper already working]) --> S
+    D([Task just finished, user pivots to something new]) --> S
+    E(["/btw-style side question"]) --> S
+    S --> Bound{Is it a docs lookup - README, PRD, etc?}
+    Bound -->|Yes| Direct[Main Agent reads directly, no Scout]
+    Bound -->|No - codebase| Dispatch[Scout searches codebase, reports minimal slice]
+```
+
+## Flow: Plan file existence check
+
+Triggered whenever the heavy loop is about to start (ambiently or via `/summoner`), before Main Agent decides whether to draft a new plan.
+
+```mermaid
+flowchart TD
+    Trigger([Heavy loop triggered]) --> Check[Main Agent checks docs/tasks/ active folder]
+    Check --> Found{Matching plan file found?}
+    Found -->|Yes| Load[Load existing plan - skip drafting]
+    Found -->|No| Draft[Draft new plan, write new file: timestamp-short-title.md]
+    Load --> Present[Present to user for approval]
+    Draft --> Present
+```
+
+## Flow: Summoning a sub-agent (the incantation)
+
+Triggered any time Main Agent decides to dispatch Scout, Crafter, or Gatekeeper.
+
+```mermaid
+flowchart TD
+    Need([Main Agent needs an agent]) --> Models[Query get_available_models via RPC]
+    Models --> Pick[Pick model + thinking level for this role/task]
+    Pick --> Incant[Say incantation in chat: agent + model + thinking + reason]
+    Incant --> Spawn[Spawn pi --mode rpc subprocess in new tmux window]
+    Spawn --> Title[Set plain descriptive window title, e.g. crafter-auth-api]
+    Title --> Active[Agent shown as working in status widget]
+```
+
+## Flow: Mid-task impact check (Scout re-summon)
+
+Triggered when Crafter reports a change back to Main Agent.
+
+```mermaid
+flowchart TD
+    Report([Crafter reports a completed change]) --> Impact{Main Agent: how wide is the blast radius?}
+    Impact -->|Narrow - e.g. one module, nothing else depends on it| Continue[Continue with current plan]
+    Impact -->|Wide - e.g. function used throughout codebase| Resummon[Resummon Scout to re-map impact]
+    Resummon --> Update[Main Agent updates plan based on new findings]
+    Update --> Continue
+```
+
+This is a judgment call made fresh each time, not a fixed rule — see PRD.
+
+## Flow: Gatekeeper review and fix
+
+Triggered after Crafter's work is reported as done, before the task is considered complete. Gatekeeper never edits files — every fix flows back through Crafter.
+
+```mermaid
+flowchart TD
+    subgraph Gatekeeper
+        Start([Gatekeeper runs - tests + functional check + code quality review]) --> Find{Finding?}
+        Find -->|Nothing found| Pass([Reports clean])
+        Find -->|Issue found| ReportFinding[Reports finding to Main Agent - always, never silent]
+    end
+    subgraph "Main Agent"
+        ReportFinding --> Scope{Caused by this task's own agents?}
+        Scope -->|No - pre-existing| Ask[Ask user what to do]
+        Scope -->|Yes - in scope| Dispatch[Dispatch Crafter to fix it - no asking needed]
+    end
+    subgraph Crafter
+        Dispatch --> Fix[Crafter implements the fix]
+    end
+    Fix --> Recheck([Gatekeeper runs again on the fix])
+    Ask --> UserDecision{User decision}
+    UserDecision -->|Fix it| Dispatch
+    UserDecision -->|Leave it| Pass
+```
+
+## Flow: Subprocess crash recovery
+
+Triggered any time during an active summon — relevant specifically because trust mode means the user may not be watching.
+
+```mermaid
+flowchart TD
+    Monitor([Main Agent monitors subprocess health - get_state timeout]) --> Healthy{Subprocess responding?}
+    Healthy -->|Yes| Monitor
+    Healthy -->|No - crashed or hung| Kill[Main Agent kills the stuck process]
+    Kill --> Resummon[Resummon same agent role - no user approval needed]
+    Resummon --> Monitor
+```
+
+## Wireframe-level notes
+
+- Status widget format (from PRD), always visible in window 0:
+  ```
+  🟢 crafter-1   dashboard.js   (working)
+  🟡 crafter-2   waiting (phase gate)
+  ✅ crafter-3   settings.js    (done)
+  ```
+- tmux window naming: `{role}-{short-description}`, incrementing on re-summon to the same area (`crafter-auth-api`, then `crafter-auth-api-2`).
+- `/watch <agent-name>` = `tmux select-window` to that agent's window. `Esc` / `/back` returns to window 0. Watching is always read-only — no input channel to the sub-agent from the watch view.
