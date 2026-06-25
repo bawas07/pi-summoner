@@ -15,6 +15,9 @@
   ],
   "license": "MIT",
   "author": "Zoych",
+  "pi": {
+    "extensions": ["./src"]
+  },
   "repository": {
     "type": "git",
     "url": "https://github.com/bawas07/pi-summoner"
