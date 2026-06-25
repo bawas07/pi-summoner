@@ -35,6 +35,28 @@ function log(msg: string): void { console.log(`[summoner] ${msg}`); }
 function warn(msg: string): void { console.warn(`[summoner] ${msg}`); }
 function err(msg: string): void { console.error(`[summoner] ${msg}`); }
 
+/**
+ * Build a progress callback that surfaces sub-agent activity in the UI working
+ * indicator and status bar — so a long agent run shows live motion instead of
+ * looking frozen. Returns a `clear()` to restore the default indicator.
+ */
+function progressFor(ctx: OrchestratorCtx, label: string): {
+  onProgress: (status: string) => void;
+  clear: () => void;
+} {
+  ctx.ui.setStatus("summoner", `${label}…`);
+  ctx.ui.setWorkingMessage(`${label}…`);
+  return {
+    onProgress: (status: string) => {
+      ctx.ui.setWorkingMessage(`${label}: ${status}`);
+    },
+    clear: () => {
+      ctx.ui.setWorkingMessage();
+      ctx.ui.setStatus("summoner", undefined);
+    },
+  };
+}
+
 // ---- Orchestrator State ----
 
 interface RunState {
@@ -109,10 +131,7 @@ async function startLoop(
     // 7.1 Draft a new plan — with Scout context if available
     // GAP 3 FIX: Run Scout first to gather codebase context for the plan
     log("Scouting codebase for context...");
-    const scoutResult = await dispatchScout(
-      `Gather context for: ${task}`,
-      ctx.cwd,
-    );
+    const scoutResult = await dispatchScout(`Gather context for: ${task}`, ctx);
 
     plan = await draftPlan(task, scoutResult, ctx.cwd);
   }
@@ -184,29 +203,16 @@ async function startLoop(
  */
 async function draftPlan(
   task: string,
-  scoutResult: string | null,
+  _scoutResult: string | null,
   _cwd: string,
 ): Promise<PlanFile> {
-  // Build steps from the task description, enriched with Scout context
-  const steps: PlanStep[] = [];
-
-  // If Scout found relevant files/context, include it in the plan
-  if (scoutResult && scoutResult.trim()) {
-    steps.push({
-      description: `Context from Scout: ${scoutResult.slice(0, 200)}`,
-      done: true, // Scout is informational, already done
-    });
-  }
-
-  // Parse task into actionable steps
-  const taskSteps = task
+  // Steps are the actionable items only — Scout's findings are context for the
+  // Crafter, not checklist entries (a "done" context step confused users).
+  const steps: PlanStep[] = task
     .split(/[\n;]/)
     .map((s) => s.trim())
-    .filter((s) => s.length > 0);
-
-  for (const desc of taskSteps) {
-    steps.push({ description: desc, done: false });
-  }
+    .filter((s) => s.length > 0)
+    .map((desc) => ({ description: desc, done: false }));
 
   if (steps.length === 0) {
     steps.push({ description: task, done: false });
@@ -253,10 +259,24 @@ async function requestApproval(
     return { outcome: "approved", trustMode: "trust" };
   }
 
-  const choice = await ctx.ui.select(
-    `${title} — ${plan.steps.length} step(s). Approve?`,
-    [APPROVE_TRUST, APPROVE_CHECK, REVISE, REJECT],
-  );
+  // Show the actual steps in the dialog so the user can review what they're
+  // approving (not just a step count). Also point at the persisted plan file.
+  const prompt = [
+    `📋 ${title}`,
+    "",
+    ...plan.steps.map((s, i) => `${i + 1}. ${s.description}`),
+    "",
+    `(saved to ${plan.path})`,
+    "",
+    "Approve this plan?",
+  ].join("\n");
+
+  const choice = await ctx.ui.select(prompt, [
+    APPROVE_TRUST,
+    APPROVE_CHECK,
+    REVISE,
+    REJECT,
+  ]);
 
   switch (choice) {
     case APPROVE_TRUST:
@@ -324,8 +344,15 @@ async function executeSteps(
 
     const promptWithContext = step.description + touchedContext;
 
+    const progress = progressFor(ctx, `🔨 Crafter step ${i + 1}/${plan.steps.length}`);
+    ctx.ui.notify(`🔨 Summoning Crafter for step ${i + 1}: ${step.description}`, "info");
     try {
-      const report = await agents.runAgent("crafter", promptWithContext, ctx.cwd);
+      const report = await agents.runAgent(
+        "crafter",
+        promptWithContext,
+        ctx.cwd,
+        progress.onProgress,
+      );
 
       // Update state
       step.done = true;
@@ -344,6 +371,8 @@ async function executeSteps(
         `✗ Step ${i + 1} failed: ${stepError instanceof Error ? stepError.message : String(stepError)}`,
       );
       throw stepError;
+    } finally {
+      progress.clear();
     }
   }
 }
@@ -351,22 +380,30 @@ async function executeSteps(
 // ---- Scout dispatch ----
 
 /** Dispatch Scout and return its findings as a string. */
-async function dispatchScout(task: string, _cwd: string): Promise<string | null> {
+async function dispatchScout(task: string, ctx: OrchestratorCtx): Promise<string | null> {
   const scoutDef = agents.getAgent("scout");
   if (!scoutDef) {
     console.error("[orchestrator] Scout agent not registered");
     return null;
   }
 
+  const progress = progressFor(ctx, "🔍 Scout searching");
+  ctx.ui.notify("🔍 Summoning Scout to search the codebase…", "info");
   try {
-    const report = await agents.runAgent("scout", task, _cwd);
+    const report = await agents.runAgent("scout", task, ctx.cwd, progress.onProgress);
     ledger.recordTouch("scout-results", "scout-1", "read");
     return report;
   } catch (scoutError) {
     console.error(
       `[orchestrator] Scout failed: ${scoutError instanceof Error ? scoutError.message : String(scoutError)}`,
     );
+    ctx.ui.notify(
+      `Scout failed: ${scoutError instanceof Error ? scoutError.message : String(scoutError)}`,
+      "error",
+    );
     return null;
+  } finally {
+    progress.clear();
   }
 }
 
@@ -377,7 +414,7 @@ async function dispatchScout(task: string, _cwd: string): Promise<string | null>
  * Gatekeeper's RPC response instead of returning an empty array.
  */
 async function runGatekeeper(
-  ctx: { cwd: string },
+  ctx: OrchestratorCtx,
 ): Promise<void> {
   const gatekeeperDef = agents.getAgent("gatekeeper");
   if (!gatekeeperDef) {
@@ -394,7 +431,19 @@ async function runGatekeeper(
       ? `Files changed by this task:\n${touched.map((f) => `  - ${f}`).join("\n")}`
       : `(No specific files recorded as changed.)`);
 
-  const responseText = await agents.runAgent("gatekeeper", reviewPrompt, ctx.cwd);
+  const progress = progressFor(ctx, "🔎 Gatekeeper reviewing");
+  ctx.ui.notify("🔎 Summoning Gatekeeper to verify the work…", "info");
+  let responseText: string | null;
+  try {
+    responseText = await agents.runAgent(
+      "gatekeeper",
+      reviewPrompt,
+      ctx.cwd,
+      progress.onProgress,
+    );
+  } finally {
+    progress.clear();
+  }
   const findings = parseFindings(responseText);
 
   for (const finding of findings) {
@@ -403,7 +452,7 @@ async function runGatekeeper(
       warn(
         `Gatekeeper found (in-scope): ${finding.description}\nDispatching Crafter to fix...`,
       );
-      await dispatchCrafterFix(finding, ctx.cwd);
+      await dispatchCrafterFix(finding, ctx);
     } else {
       // Out-of-scope: ask user
       warn(
@@ -473,16 +522,23 @@ function parseFindings(responseText: string | null): GatekeeperFinding[] {
 /** Dispatch Crafter to fix an in-scope Gatekeeper finding */
 async function dispatchCrafterFix(
   finding: GatekeeperFinding,
-  _cwd: string,
+  ctx: OrchestratorCtx,
 ): Promise<void> {
   const crafterDef = agents.getAgent("crafter");
   if (!crafterDef) return;
 
-  const report = await agents.runAgent(
-    "crafter",
-    `Fix this Gatekeeper finding: ${finding.description}\nFiles affected: ${finding.files.join(", ")}`,
-    _cwd,
-  );
+  const progress = progressFor(ctx, "🔨 Crafter fixing finding");
+  let report: string;
+  try {
+    report = await agents.runAgent(
+      "crafter",
+      `Fix this Gatekeeper finding: ${finding.description}\nFiles affected: ${finding.files.join(", ")}`,
+      ctx.cwd,
+      progress.onProgress,
+    );
+  } finally {
+    progress.clear();
+  }
 
   const changed = parseChangedFiles(report);
   ledger.recordTouches(

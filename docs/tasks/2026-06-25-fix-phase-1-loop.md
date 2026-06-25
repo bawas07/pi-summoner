@@ -58,7 +58,17 @@ non-functional. Root causes found in review:
 - [ ] Remove hardcoded `claude-sonnet-4-5`; resolve model from session/`modelRegistry`
 
 ### Phase 4 — Verify & reconcile docs
-- [ ] Extension loads via `pi -e ./src` with no errors (tasks 9.1)
-- [ ] Run end-to-end checks tasks.md 9.2–9.9
+- [x] Update `architecture.md` (rpc-client section) + `guide.md §3` to describe `createAgentSession()` instead of `pi --mode rpc`
+- [ ] Extension loads via `pi -e ./src` with no errors (tasks 9.1) — manual
+- [ ] Run end-to-end checks tasks.md 9.2–9.9 — manual
 - [ ] Run `full-reviews` skill on the branch (task 9.10)
-- [ ] Update `architecture.md` (rpc-client section) + `guide.md §3` to describe `createAgentSession()` instead of `pi --mode rpc`
+
+### Phase 5 — UX: live progress + FFF search (from live testing)
+- [x] `/summoner` looked frozen during sub-agent runs → surface live activity via
+      `ctx.ui` working-message + status bar + start/finish notifications
+- [x] Stream sub-agent tool activity / text through `onProgress` (subscribe to
+      `tool_execution_start` / `message_update`)
+- [x] Hang guard: timeout that aborts the sub-agent session and fails loudly
+- [x] Scout (and Gatekeeper) use FFF (`@ff-labs/fff-node`) `fff_grep`/`fff_find` when
+      installed; graceful fallback to built-in grep/find when not (`fffTools()` → `[]`,
+      built-in tools always in the allowlist)

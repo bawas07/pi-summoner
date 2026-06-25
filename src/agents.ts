@@ -22,6 +22,14 @@ import {
   GATEKEEPER_TOOLS,
 } from "./agent-session";
 import { listActivePlans } from "./plan-file";
+import { fffTools } from "./fff";
+
+/** Options passed to each agent executor. */
+interface ExecOpts {
+  cwd: string;
+  /** Live progress hook for surfacing sub-agent activity. */
+  onProgress?: (status: string) => void;
+}
 
 // ---- In-memory registry ----
 
@@ -34,7 +42,7 @@ let instanceCounter = 0;
 export function registerAgent(
   pi: ExtensionAPI,
   def: AgentDefinition,
-  executeFn: (task: string, ctx: { cwd: string }) => Promise<string>,
+  executeFn: (task: string, opts: ExecOpts) => Promise<string>,
 ): void {
   agentDefs.set(def.name, def);
 
@@ -68,7 +76,14 @@ export function registerAgent(
       });
 
       try {
-        const result = await executeFn(params.task, { cwd: ctx.cwd });
+        const result = await executeFn(params.task, {
+          cwd: ctx.cwd,
+          onProgress: (status: string) =>
+            onUpdate?.({
+              content: [{ type: "text", text: `🟢 ${def.name}: ${status}` }],
+              details: { instanceId, status: "working" },
+            }),
+        });
 
         instance.status = "done";
         agentInstances.set(instanceId, instance);
@@ -98,12 +113,21 @@ export function registerAgent(
 
 // ---- Scout: isolated read-only search session ----
 
-async function scoutExecute(task: string, ctx: { cwd: string }): Promise<string> {
+async function scoutExecute(task: string, opts: ExecOpts): Promise<string> {
+  // Use FFF-powered search tools when available; otherwise built-in grep/find.
+  const fff = await fffTools(opts.cwd);
+  const fffNudge = fff.length
+    ? `\n\nFFF search is available — PREFER fff_grep / fff_find over the built-in ` +
+      `grep / find for speed and ranking.`
+    : "";
+
   return runAgentSession({
-    cwd: ctx.cwd,
+    cwd: opts.cwd,
     tools: SCOUT_TOOLS,
+    customTools: fff,
+    onProgress: opts.onProgress,
     task:
-      `${SCOUT_PROMPT}\n\n` +
+      `${SCOUT_PROMPT}${fffNudge}\n\n` +
       `Search the codebase for the following and report back the minimal relevant ` +
       `slices (file paths + line numbers + the few key lines), never whole files:\n\n${task}`,
   });
@@ -111,7 +135,7 @@ async function scoutExecute(task: string, ctx: { cwd: string }): Promise<string>
 
 // ---- Crafter: isolated coding session (read/write/edit/bash) ----
 
-async function crafterExecute(task: string, ctx: { cwd: string }): Promise<string> {
+async function crafterExecute(task: string, opts: ExecOpts): Promise<string> {
   // Hard constraint (PRD): never let Crafter touch disk without a plan existing.
   // The orchestrator writes the plan file before executing steps, so an active
   // plan is present during a real run; a direct, plan-less Crafter call is refused.
@@ -124,8 +148,9 @@ async function crafterExecute(task: string, ctx: { cwd: string }): Promise<strin
   }
 
   return runAgentSession({
-    cwd: ctx.cwd,
+    cwd: opts.cwd,
     tools: CRAFTER_TOOLS,
+    onProgress: opts.onProgress,
     task:
       `${CRAFTER_PROMPT}\n\n` +
       `Implement the following. When done, report concisely WHICH FILES you changed ` +
@@ -135,10 +160,14 @@ async function crafterExecute(task: string, ctx: { cwd: string }): Promise<strin
 
 // ---- Gatekeeper: isolated read-only verification session (no write/edit) ----
 
-async function gatekeeperExecute(task: string, ctx: { cwd: string }): Promise<string> {
+async function gatekeeperExecute(task: string, opts: ExecOpts): Promise<string> {
+  const fff = await fffTools(opts.cwd);
+
   return runAgentSession({
-    cwd: ctx.cwd,
+    cwd: opts.cwd,
     tools: GATEKEEPER_TOOLS,
+    customTools: fff,
+    onProgress: opts.onProgress,
     task:
       `${GATEKEEPER_PROMPT}\n\n` +
       `Verify the completed work below. Run tests / functional checks as needed. ` +
@@ -168,7 +197,7 @@ Gatekeeper never edits files — it only reports findings.`;
 /** Role → execute fn, so the orchestrator runs agents through the same path as the tools. */
 const EXECUTORS: Record<
   string,
-  (task: string, ctx: { cwd: string }) => Promise<string>
+  (task: string, opts: ExecOpts) => Promise<string>
 > = {
   scout: scoutExecute,
   crafter: crafterExecute,
@@ -180,10 +209,11 @@ export async function runAgent(
   role: string,
   task: string,
   cwd: string,
+  onProgress?: (status: string) => void,
 ): Promise<string> {
   const exec = EXECUTORS[role];
   if (!exec) throw new Error(`Unknown agent role: ${role}`);
-  return exec(task, { cwd });
+  return exec(task, { cwd, onProgress });
 }
 
 export function registerBuiltinAgents(pi: ExtensionAPI): void {
