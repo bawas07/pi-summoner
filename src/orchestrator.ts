@@ -4,11 +4,14 @@
  * This is the core decision engine. It owns all mutable orchestration state —
  * no sub-agent or Gatekeeper instance holds its own conflicting view of progress.
  *
- * Two entry paths:
- *   - Ambient: trigger.ts's TriggerResult from the turn_start hook
- *   - Manual: /summoner <task> command bypassing ambient detection
+ * Driver model (Phase 2): the loop is run synchronously inside the `/summoner`
+ * command invocation, using `ctx.ui` for plan approval and per-step checkpoints
+ * (both awaitable and visible). It is NOT spread across `turn_start` events — the
+ * previous suspended-promise approval design deadlocked. Ambient detection now
+ * only emits a non-blocking hint (see `notifyAmbient`); the LLM also drives work
+ * directly by calling the `summon_*` tools.
  *
- * Phase 1: sequential-only, no tmux, hardcoded model, heuristics-based trigger.
+ * Phase 1: sequential-only, no tmux, session-scoped model.
  */
 
 import type {
@@ -18,11 +21,13 @@ import type {
   TrustMode,
   GatekeeperFinding,
 } from "./types";
+import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import * as planFile from "./plan-file";
 import * as ledger from "./ledger";
 import * as agents from "./agents";
-import type { SubprocessClient, RpcResponse } from "./rpc-client";
-import { spawnSubprocess } from "./rpc-client";
+
+/** The slice of the pi context the orchestrator needs. */
+export type OrchestratorCtx = Pick<ExtensionContext, "cwd" | "ui" | "hasUI">;
 
 // ---- Logging ----
 
@@ -36,77 +41,55 @@ interface RunState {
   plan: PlanFile | null;
   trustMode: TrustMode;
   currentStep: number;
-  activeClient: SubprocessClient | null;
   triggeredBy: "ambient" | "manual";
   /** Scout findings from the most recent dispatch, fed into plan drafting */
   lastScoutResult: string | null;
-  /** Pending approval — set when waiting for user response */
-  pendingApproval: {
-    plan: PlanFile;
-    resolve: (result: ApprovalResult) => void;
-  } | null;
 }
 
 let currentRun: RunState | null = null;
 
-// ---- 7.1 Core entry point ----
+/** Is the heavy loop currently running? Used to suppress duplicate ambient hints. */
+export function isRunActive(): boolean {
+  return currentRun !== null && currentRun.plan !== null;
+}
 
-export async function handleTrigger(
-  trigger: TriggerResult,
-  task: string,
-  ctx: { cwd: string },
-): Promise<void> {
-  // If awaiting approval, check if this turn is the user's response
-  if (currentRun?.pendingApproval) {
-    const response = parseApprovalResponse(task);
-    currentRun.pendingApproval.resolve(response);
-    return;
-  }
+// ---- Ambient hint (non-blocking; runs from turn_start) ----
 
-  // If already in a run, don't start another
-  if (currentRun && currentRun.plan) {
-    // But Scout can still dispatch mid-run
-    if (trigger.needsScout && !trigger.implementIntent) {
-      const scoutResult = await dispatchScout(task, ctx.cwd);
-      if (currentRun) currentRun.lastScoutResult = scoutResult;
-    }
-    return;
-  }
-
-  // Scout-only: dispatch immediately, no approval
-  if (trigger.needsScout && !trigger.implementIntent) {
-    await dispatchScout(task, ctx.cwd);
-    return;
-  }
-
-  // Implement intent: start the heavy loop
+/**
+ * Emit a lightweight, non-blocking hint based on ambient detection. Does NOT run
+ * the loop or block the turn — that was the source of the previous deadlock. The
+ * LLM has the `summon_*` tools and can act on these signals directly; `/summoner`
+ * starts the full orchestrated loop.
+ */
+export function notifyAmbient(trigger: TriggerResult, ctx: OrchestratorCtx): void {
+  if (isRunActive()) return;
   if (trigger.implementIntent) {
-    await startLoop(task, ctx);
+    ctx.ui.notify(
+      "💡 Implementation intent detected — run /summoner <task> to start the plan → approve → build → verify loop.",
+      "info",
+    );
+  } else if (trigger.needsScout) {
+    ctx.ui.notify(
+      "🔍 This looks like a codebase question — summon_scout can find the relevant slices.",
+      "info",
+    );
   }
 }
 
-// ---- 7.7 Manual override (/summoner) ----
+// ---- 7.7 Manual override (/summoner) — the loop driver ----
 
 export async function handleManualSummon(
   task: string,
-  ctx: { cwd: string },
+  ctx: OrchestratorCtx,
 ): Promise<void> {
-  // If awaiting approval, check if this turn is the user's response
-  if (currentRun?.pendingApproval) {
-    const response = parseApprovalResponse(task);
-    currentRun.pendingApproval.resolve(response);
-    return;
-  }
-
-  // If already in a run, warn
-  if (currentRun && currentRun.plan) {
+  if (isRunActive()) {
     warn(
-      `Already running plan: ${currentRun.plan.title}. Complete or abort it first.`,
+      `Already running plan: ${currentRun?.plan?.title}. Complete or abort it first.`,
     );
+    ctx.ui.notify("A summoner run is already in progress.", "warning");
     return;
   }
 
-  // Force implementIntent = true, skip ambient trigger
   await startLoop(task, ctx);
 }
 
@@ -114,7 +97,7 @@ export async function handleManualSummon(
 
 async function startLoop(
   task: string,
-  ctx: { cwd: string },
+  ctx: OrchestratorCtx,
 ): Promise<void> {
   // 7.4 Hard constraint: check for existing plan BEFORE anything else
   let plan = await planFile.findExisting(task);
@@ -134,50 +117,63 @@ async function startLoop(
     plan = await draftPlan(task, scoutResult, ctx.cwd);
   }
 
-  // 7.2 Present for approval + set trust mode
-  const approval = await requestApproval(plan);
-  if (!approval.approved) {
-    if (approval.feedback) {
-      // User wants revisions — redraft
-      plan = await draftPlan(`${task}\n\nFeedback: ${approval.feedback}`, null, ctx.cwd);
-      const reApproval = await requestApproval(plan);
-      if (!reApproval.approved) {
-        err("Plan rejected. Aborting.");
-        return;
-      }
-      plan.trustMode = reApproval.trustMode;
-    } else {
-      err("Plan rejected. Aborting.");
-      return;
-    }
-  } else {
-    plan.trustMode = approval.trustMode;
+  // 7.2 Present for approval + set trust mode (one decision, via ctx.ui)
+  let approval = await requestApproval(plan, ctx);
+
+  // Allow up to 2 revise cycles before giving up.
+  let revises = 0;
+  while (approval.outcome === "revise" && revises < 2) {
+    revises++;
+    plan = await draftPlan(
+      `${task}\n\nFeedback: ${approval.feedback ?? ""}`,
+      null,
+      ctx.cwd,
+    );
+    approval = await requestApproval(plan, ctx);
   }
+
+  if (approval.outcome !== "approved") {
+    ctx.ui.notify("Plan not approved — aborting summoner run.", "warning");
+    log("Plan rejected/abandoned. Aborting.");
+    // Drafted-but-rejected plan file is left in docs/tasks/ for the user.
+    return;
+  }
+
+  plan.trustMode = approval.trustMode;
 
   // Initialize run state
   currentRun = {
     plan,
     trustMode: approval.trustMode,
     currentStep: 0,
-    activeClient: null,
-    triggeredBy: "ambient",
+    triggeredBy: "manual",
     lastScoutResult: null,
-    pendingApproval: null,
   };
 
-  // 7.3 Execute steps sequentially
-  await executeSteps(ctx);
+  try {
+    // 7.3 Execute steps sequentially
+    await executeSteps(ctx);
 
-  // 7.5 Always run Gatekeeper after all steps
-  await runGatekeeper(ctx);
+    // 7.5 Always run Gatekeeper after all steps
+    await runGatekeeper(ctx);
 
-  // 7.6 Archive on completion
-  await planFile.archive(plan.path);
-  log(`Task complete! Plan archived: ${plan.title}`);
-
-  // Reset state
-  currentRun = null;
-  ledger.resetLedger();
+    // 7.6 Archive on completion
+    await planFile.archive(plan.path);
+    log(`Task complete! Plan archived: ${plan.title}`);
+    ctx.ui.notify(`✅ Summoner complete: ${plan.title}`, "info");
+  } catch (loopError) {
+    err(
+      `Run failed: ${loopError instanceof Error ? loopError.message : String(loopError)}`,
+    );
+    ctx.ui.notify(
+      `Summoner run failed: ${loopError instanceof Error ? loopError.message : String(loopError)}`,
+      "error",
+    );
+  } finally {
+    // Reset state
+    currentRun = null;
+    ledger.resetLedger();
+  }
 }
 
 // ---- Draft a plan ----
@@ -220,88 +216,64 @@ async function draftPlan(
   return planFile.write(shortTitle, steps, "checkpoint");
 }
 
-// ---- Approval flow ----
+// ---- Approval flow (ctx.ui — awaitable, visible) ----
 
 interface ApprovalResult {
-  approved: boolean;
+  outcome: "approved" | "revise" | "rejected";
   trustMode: TrustMode;
   feedback?: string;
 }
 
+const APPROVE_TRUST = "🙈 Approve — Trust mode (auto-proceed through steps)";
+const APPROVE_CHECK = "🔍 Approve — Checkpoint mode (confirm each step)";
+const REVISE = "✏️  Revise (give feedback)";
+const REJECT = "✖  Reject";
+
 /**
- * GAP 4 FIX: Real approval flow that waits for user response.
+ * Present the plan and capture the user's decision via `ctx.ui.select`.
+ * One interaction sets both go-ahead AND trust mode (per PRD). Awaitable and
+ * visible — no suspended promise across turns.
  *
- * In Phase 1, approval uses pi's notification system. The function
- * presents the plan and returns a promise that resolves when the
- * user responds (detected on the next turn_start).
+ * Falls back to Trust-mode approval if no interactive UI is available
+ * (e.g. non-TUI mode), so headless/automated runs still proceed.
  */
 async function requestApproval(
   plan: PlanFile,
+  ctx: OrchestratorCtx,
 ): Promise<ApprovalResult> {
   const stepList = plan.steps
     .map((s, i) => `  ${i + 1}. [${s.done ? "x" : " "}] ${s.description}`)
     .join("\n");
+  const title = `Plan: ${plan.title}`;
 
-  log(
-    `📋 **Plan: ${plan.title}**\n\n` +
-      `${stepList}\n\n` +
-      `Reply with:\n` +
-      `  "go" or "trust" — approve with 🙈 trust mode (auto-proceed)\n` +
-      `  "step" or "check" — approve with 🔍 checkpoint mode (confirm each step)\n` +
-      `  "no" or describe changes — reject/revise`,
+  log(`📋 ${title}\n${stepList}`);
+
+  if (!ctx.hasUI) {
+    warn("No interactive UI — auto-approving plan in Trust mode.");
+    return { outcome: "approved", trustMode: "trust" };
+  }
+
+  const choice = await ctx.ui.select(
+    `${title} — ${plan.steps.length} step(s). Approve?`,
+    [APPROVE_TRUST, APPROVE_CHECK, REVISE, REJECT],
   );
 
-  // GAP 4: Return a promise that resolves when the user responds.
-  // The response is captured on the next turn_start or /summoner invocation.
-  return new Promise<ApprovalResult>((resolve) => {
-    if (!currentRun) {
-      // Edge case: no run state yet, set up pending approval
-      const pendingState: RunState = {
-        plan,
-        trustMode: "checkpoint",
-        currentStep: 0,
-        activeClient: null,
-        triggeredBy: "ambient",
-        lastScoutResult: null,
-        pendingApproval: {
-          plan,
-          resolve: (result: ApprovalResult) => {
-            // Clean up the pending state
-            const state = currentRun;
-            if (state) state.pendingApproval = null;
-            resolve(result);
-          },
-        },
-      };
-      currentRun = pendingState;
-    } else {
-      currentRun.pendingApproval = {
-        plan,
-        resolve: (result: ApprovalResult) => {
-          if (currentRun) currentRun.pendingApproval = null;
-          resolve(result);
-        },
-      };
+  switch (choice) {
+    case APPROVE_TRUST:
+      return { outcome: "approved", trustMode: "trust" };
+    case APPROVE_CHECK:
+      return { outcome: "approved", trustMode: "checkpoint" };
+    case REVISE: {
+      const feedback = await ctx.ui.input(
+        "What should change about the plan?",
+        "Describe the revision…",
+      );
+      return { outcome: "revise", trustMode: "checkpoint", feedback: feedback ?? "" };
     }
-  });
-}
-
-/** Parse the user's approval response from a message */
-function parseApprovalResponse(message: string): ApprovalResult {
-  const trimmed = message.trim().toLowerCase();
-
-  // Trust mode keywords
-  if (/^(go|trust|yes|approve|proceed)$/.test(trimmed)) {
-    return { approved: true, trustMode: "trust" };
+    default:
+      // REJECT or dialog dismissed (undefined)
+      return { outcome: "rejected", trustMode: "checkpoint" };
   }
-
-  // Checkpoint mode keywords
-  if (/^(step|check|checkpoint|confirm)$/.test(trimmed)) {
-    return { approved: true, trustMode: "checkpoint" };
-  }
-
-  // Rejection — anything else is treated as feedback for revision
-  return { approved: false, trustMode: "checkpoint", feedback: message };
 }
 
 // ---- Step execution loop ----
@@ -311,7 +283,7 @@ function parseApprovalResponse(message: string): ApprovalResult {
  * Previously-touched files are included in the prompt context.
  */
 async function executeSteps(
-  ctx: { cwd: string },
+  ctx: OrchestratorCtx,
 ): Promise<void> {
   if (!currentRun?.plan) return;
 
@@ -323,13 +295,17 @@ async function executeSteps(
 
     if (step.done) continue;
 
-    // Checkpoint mode: pause and wait for user
-    if (currentRun.trustMode === "checkpoint" && i > 0) {
-      log(
-        `🔍 Step ${i + 1}/${plan.steps.length}: ${step.description}\nProceed? Reply "go" or "skip".`,
+    // Checkpoint mode: actually pause and wait for the user before this step.
+    if (currentRun.trustMode === "checkpoint" && ctx.hasUI) {
+      const proceed = await ctx.ui.confirm(
+        `🔍 Step ${i + 1}/${plan.steps.length}`,
+        `${step.description}\n\nProceed with this step?`,
       );
-      // In checkpoint mode, the orchestrator pauses here.
-      // The user's next message is captured by the approval flow.
+      if (!proceed) {
+        log(`Step ${i + 1} skipped by user; stopping run.`);
+        ctx.ui.notify("Run stopped at checkpoint.", "info");
+        return;
+      }
     }
 
     // Summon Crafter for this step
@@ -348,30 +324,26 @@ async function executeSteps(
 
     const promptWithContext = step.description + touchedContext;
 
-    const client = spawnSubprocess(crafterDef.defaultModel, crafterDef.defaultThinking);
-    currentRun.activeClient = client;
-
     try {
-      await client.send({
-        id: `crafter-step-${i}`,
-        type: "prompt",
-        content: promptWithContext,
-      });
+      const report = await agents.runAgent("crafter", promptWithContext, ctx.cwd);
 
       // Update state
       step.done = true;
       await planFile.checkOffStep(plan.path, i);
-      ledger.recordTouch(plan.path, `crafter-${i + 1}`, "write");
+      // Record the actual files Crafter reported changing (not the plan file).
+      const changed = parseChangedFiles(report);
+      ledger.recordTouches(
+        changed.length > 0 ? changed : ["(unspecified)"],
+        `crafter-${i + 1}`,
+        "write",
+      );
 
       log(`✓ Step ${i + 1} complete: ${step.description}`);
-    } catch (err) {
+    } catch (stepError) {
       err(
-        `✗ Step ${i + 1} failed: ${err instanceof Error ? err.message : String(err)}`,
+        `✗ Step ${i + 1} failed: ${stepError instanceof Error ? stepError.message : String(stepError)}`,
       );
-      throw err;
-    } finally {
-      await client.terminate();
-      currentRun.activeClient = null;
+      throw stepError;
     }
   }
 }
@@ -386,25 +358,15 @@ async function dispatchScout(task: string, _cwd: string): Promise<string | null>
     return null;
   }
 
-  const client = spawnSubprocess(scoutDef.defaultModel, scoutDef.defaultThinking);
   try {
-    const response = await client.send({
-      id: "scout-1",
-      type: "prompt",
-      content: task,
-    });
-
+    const report = await agents.runAgent("scout", task, _cwd);
     ledger.recordTouch("scout-results", "scout-1", "read");
-
-    // Extract text content from the RPC response
-    return extractTextContent(response);
-  } catch (err) {
+    return report;
+  } catch (scoutError) {
     console.error(
-      `[orchestrator] Scout failed: ${err instanceof Error ? err.message : String(err)}`,
+      `[orchestrator] Scout failed: ${scoutError instanceof Error ? scoutError.message : String(scoutError)}`,
     );
     return null;
-  } finally {
-    await client.terminate();
   }
 }
 
@@ -424,44 +386,36 @@ async function runGatekeeper(
 
   log("Gatekeeper reviewing...");
 
-  const client = spawnSubprocess(
-    gatekeeperDef.defaultModel,
-    gatekeeperDef.defaultThinking,
-  );
+  // Tell Gatekeeper which files this task touched, so it can judge provenance.
+  const touched = ledger.getTouchedFiles().filter((f) => !f.startsWith("("));
+  const reviewPrompt =
+    `Review the completed work. Report all findings.\n\n` +
+    (touched.length > 0
+      ? `Files changed by this task:\n${touched.map((f) => `  - ${f}`).join("\n")}`
+      : `(No specific files recorded as changed.)`);
 
-  try {
-    const response = await client.send({
-      id: "gatekeeper-1",
-      type: "prompt",
-      content: "Review the completed work. Report all findings.",
-    });
+  const responseText = await agents.runAgent("gatekeeper", reviewPrompt, ctx.cwd);
+  const findings = parseFindings(responseText);
 
-    // GAP 2: Parse findings from the actual response text
-    const responseText = extractTextContent(response);
-    const findings = parseFindings(responseText);
-
-    for (const finding of findings) {
-      if (finding.inScope) {
-        // In-scope: auto-dispatch Crafter to fix, no user approval needed
-        warn(
-          `Gatekeeper found (in-scope): ${finding.description}\nDispatching Crafter to fix...`,
-        );
-        await dispatchCrafterFix(finding, ctx.cwd);
-      } else {
-        // Out-of-scope: ask user
-        warn(
-          `Gatekeeper found (out-of-scope, pre-existing): ${finding.description}\n` +
-            `This was not caused by this task. Type "fix it" to address, or ignore.`,
-        );
-        // In Phase 1, leave it for the user to decide on next turn
-      }
+  for (const finding of findings) {
+    if (finding.inScope) {
+      // In-scope: auto-dispatch Crafter to fix, no user approval needed
+      warn(
+        `Gatekeeper found (in-scope): ${finding.description}\nDispatching Crafter to fix...`,
+      );
+      await dispatchCrafterFix(finding, ctx.cwd);
+    } else {
+      // Out-of-scope: ask user
+      warn(
+        `Gatekeeper found (out-of-scope, pre-existing): ${finding.description}\n` +
+          `This was not caused by this task. Type "fix it" to address, or ignore.`,
+      );
+      // In Phase 1, leave it for the user to decide on next turn
     }
+  }
 
-    if (findings.length === 0) {
-      log("Gatekeeper: all clear ✓");
-    }
-  } finally {
-    await client.terminate();
+  if (findings.length === 0) {
+    log("Gatekeeper: all clear ✓");
   }
 }
 
@@ -524,61 +478,38 @@ async function dispatchCrafterFix(
   const crafterDef = agents.getAgent("crafter");
   if (!crafterDef) return;
 
-  const client = spawnSubprocess(crafterDef.defaultModel, crafterDef.defaultThinking);
-  try {
-    await client.send({
-      id: "crafter-fix",
-      type: "prompt",
-      content: `Fix this Gatekeeper finding: ${finding.description}\nFiles affected: ${finding.files.join(", ")}`,
-    });
+  const report = await agents.runAgent(
+    "crafter",
+    `Fix this Gatekeeper finding: ${finding.description}\nFiles affected: ${finding.files.join(", ")}`,
+    _cwd,
+  );
 
-    for (const file of finding.files) {
-      ledger.recordTouch(file, "crafter-fix", "write");
-    }
-  } finally {
-    await client.terminate();
-  }
+  const changed = parseChangedFiles(report);
+  ledger.recordTouches(
+    changed.length > 0 ? changed : finding.files,
+    "crafter-fix",
+    "write",
+  );
 }
 
-// ---- RPC Response Helpers ----
+// ---- Report parsing ----
 
-/** Extract text content from an RPC response object */
-function extractTextContent(response: RpcResponse): string | null {
-  // Try common response shapes from pi's RPC mode
-  const resp = response as Record<string, unknown>;
-
-  if (typeof resp.result === "string") return resp.result;
-  if (typeof resp.content === "string") return resp.content;
-  if (typeof resp.text === "string") return resp.text;
-
-  // Content array (MCP-style)
-  if (Array.isArray(resp.content)) {
-    const texts = (resp.content as Array<{ type: string; text?: string }>)
-      .filter((c) => c.type === "text" && typeof c.text === "string")
-      .map((c) => c.text!);
-    if (texts.length > 0) return texts.join("\n");
-  }
-
-  // Fallback: stringify the whole response for inspection
-  try {
-    return JSON.stringify(response, null, 2);
-  } catch {
-    return null;
-  }
+/**
+ * Extract repo-relative file paths a Crafter reports having changed.
+ * Crafter is prompted to list changed files one-per-line; we also pick up
+ * any inline path-like tokens as a fallback.
+ */
+function parseChangedFiles(report: string | null): string[] {
+  if (!report) return [];
+  const matches = report.match(/[\w./-]+\.(?:ts|tsx|js|jsx|json|md|css|html|yml|yaml)/g);
+  if (!matches) return [];
+  return [...new Set(matches)];
 }
 
 // ---- Cleanup ----
 
-/** Abort the current run, killing any active subprocess */
+/** Abort the current run and reset orchestration state. */
 export async function abortRun(): Promise<void> {
-  if (currentRun?.activeClient) {
-    await currentRun.activeClient.terminate();
-  }
   currentRun = null;
   ledger.resetLedger();
-}
-
-/** Check if orchestrator is currently awaiting user approval */
-export function isAwaitingApproval(): boolean {
-  return currentRun?.pendingApproval !== null && currentRun?.pendingApproval !== undefined;
 }

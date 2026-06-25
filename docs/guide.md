@@ -63,9 +63,35 @@ export default function (pi: ExtensionAPI) {
 
 The factory can be `async` if you need startup work (e.g. loading user-defined agent configs from disk) — Pi awaits it before continuing startup, so this is the right place to discover and register user-defined agents before the session begins.
 
-## 3. Modeling a "sub-agent" as a custom tool
+## 3. Modeling a "sub-agent"
 
-Pi has **no native sub-agent concept** — this is something every multi-agent Pi extension builds itself. The natural mapping for this project: **each agent (Scout/Crafter/Gatekeeper/user-defined) is a registered tool**, invoked by name, with its own internal logic.
+There are two layers here, and this project uses both:
+
+1. **Surface — a registered tool per agent** (`summon_scout` / `summon_crafter` /
+   `summon_gatekeeper`). This is what the Main-Agent LLM calls. Pattern shown below.
+2. **Execution — an isolated session via `createAgentSession()`.** Pi *does* expose a
+   first-class way to run an isolated sub-agent in-process (own context, tools, model,
+   thinking level) — the SDK function `createAgentSession()`, the same mechanism
+   `tintinweb/pi-subagents` uses. Each `summon_*` tool's `execute` runs one of these
+   sessions and returns its final text. We deliberately do **not** spawn `pi --mode rpc`
+   OS subprocesses — `createAgentSession()` is simpler and avoids JSONL-framing fragility.
+
+   ```typescript
+   import { createAgentSession } from "@earendil-works/pi-coding-agent";
+
+   const { session } = await createAgentSession({
+     cwd,
+     tools: ["read", "grep", "find", "ls"], // per-role allowlist; omit for pi defaults
+   });
+   await session.prompt(task);                // resolves when the turn completes
+   const text = extractAssistantText(session.messages); // read final assistant message
+   session.dispose();
+   ```
+
+   **Read-only enforcement is architectural**: pass a tool allowlist that excludes
+   `write`/`edit` for Scout/Gatekeeper. Crafter gets the full coding set.
+
+The tool-registration surface for each agent:
 
 ```typescript
 import { Type } from "typebox";

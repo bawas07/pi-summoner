@@ -14,7 +14,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { evaluateTurn } from "./trigger";
 import { registerBuiltinAgents } from "./agents";
 import { initPlanFiles } from "./plan-file";
-import { handleManualSummon, handleTrigger, isAwaitingApproval } from "./orchestrator";
+import { handleManualSummon, notifyAmbient, isRunActive } from "./orchestrator";
 
 export default function (pi: ExtensionAPI): void {
   // 8.4 Initialize on session start
@@ -37,31 +37,24 @@ export default function (pi: ExtensionAPI): void {
     handler: async (args, ctx) => {
       const task = args.trim();
       if (!task) {
-        console.warn("[summoner] /summoner called without task");
+        ctx.ui.notify("Usage: /summoner <task>", "warning");
         return;
       }
 
       console.log(`[summoner] Manual summon: ${task}`);
-      await handleManualSummon(task, { cwd: ctx.cwd });
+      await handleManualSummon(task, ctx);
     },
   });
 
-  // 8.3 Ambient trigger: evaluate every conversation turn
+  // 8.3 Ambient trigger: evaluate every conversation turn (non-blocking hint only).
+  // The loop is NOT run from here — that previously deadlocked. We only nudge;
+  // the LLM acts via summon_* tools, and /summoner starts the full loop.
   pi.on("turn_start", async (_event, ctx) => {
-    const message = extractLatestMessage(ctx);
+    if (isRunActive()) return;
+
+    const message = extractLatestMessage(ctx as unknown as Record<string, unknown>);
     if (!message) return;
 
-    // If orchestrator is awaiting user approval, route this message
-    if (isAwaitingApproval()) {
-      await handleTrigger(
-        { needsScout: false, implementIntent: true },
-        message,
-        { cwd: ctx.cwd },
-      );
-      return;
-    }
-
-    // Normal trigger evaluation
     const triggerResult = evaluateTurn({
       message,
       recentHistory: [],
@@ -70,7 +63,7 @@ export default function (pi: ExtensionAPI): void {
 
     if (!triggerResult.needsScout && !triggerResult.implementIntent) return;
 
-    await handleTrigger(triggerResult, message, { cwd: ctx.cwd });
+    notifyAmbient(triggerResult, ctx);
   });
 }
 

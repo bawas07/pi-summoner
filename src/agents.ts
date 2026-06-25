@@ -11,13 +11,17 @@
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import { readFile, readdir, access } from "node:fs/promises";
-import { join, relative, resolve, dirname } from "node:path";
-import { constants } from "node:fs";
 import type {
   AgentDefinition,
   AgentInstance,
 } from "./types";
+import {
+  runAgentSession,
+  SCOUT_TOOLS,
+  CRAFTER_TOOLS,
+  GATEKEEPER_TOOLS,
+} from "./agent-session";
+import { listActivePlans } from "./plan-file";
 
 // ---- In-memory registry ----
 
@@ -60,6 +64,7 @@ export function registerAgent(
 
       onUpdate?.({
         content: [{ type: "text", text: `🟢 ${def.name} working: ${params.task}` }],
+        details: { instanceId, status: "working" },
       });
 
       try {
@@ -91,89 +96,56 @@ export function registerAgent(
   });
 }
 
-// ---- Scout: tight, scannable codebase search ----
+// ---- Scout: isolated read-only search session ----
 
 async function scoutExecute(task: string, ctx: { cwd: string }): Promise<string> {
-  const keywords = task
-    .toLowerCase()
-    .split(/\s+/)
-    .filter((w) => w.length > 2)
-    .slice(0, 5);
-
-  if (keywords.length === 0) {
-    return "Scout: No searchable keywords. Try a more specific query.";
-  }
-
-  const searchDirs = ["src", "lib", "app", "components", "utils", "services"];
-  const found: string[] = [];
-
-  for (const dir of searchDirs) {
-    const fullPath = join(ctx.cwd, dir);
-    try {
-      await access(fullPath, constants.R_OK);
-      const entries = await readdir(fullPath, { recursive: true });
-      const matching = entries
-        .filter((f) =>
-          keywords.some((kw) => f.toLowerCase().includes(kw)) &&
-          /\.[tj]sx?$/.test(f),
-        )
-        .slice(0, 5); // tighter: 5 files per dir max
-
-      for (const file of matching) {
-        const filePath = join(fullPath, file);
-        try {
-          const content = await readFile(filePath, "utf8");
-          const lines = content.split("\n");
-          const hits: string[] = [];
-          for (let i = 0; i < lines.length && hits.length < 3; i++) {
-            if (keywords.some((kw) => lines[i].toLowerCase().includes(kw))) {
-              hits.push(`L${i + 1}: ${lines[i].trim().slice(0, 80)}`);
-            }
-          }
-          if (hits.length > 0) {
-            found.push(`${relative(ctx.cwd, filePath)} — ${hits.join(" | ")}`);
-          }
-        } catch { /* skip */ }
-      }
-    } catch { /* dir missing */ }
-
-    if (found.length >= 8) break; // enough results
-  }
-
-  if (found.length === 0) {
-    return `Scout: nothing found for "${keywords.join(" ")}" in ${searchDirs.join(", ")}.`;
-  }
-
-  return found.slice(0, 8).join("\n");
+  return runAgentSession({
+    cwd: ctx.cwd,
+    tools: SCOUT_TOOLS,
+    task:
+      `${SCOUT_PROMPT}\n\n` +
+      `Search the codebase for the following and report back the minimal relevant ` +
+      `slices (file paths + line numbers + the few key lines), never whole files:\n\n${task}`,
+  });
 }
 
-// ---- Crafter: returns a structured implementation prompt ----
+// ---- Crafter: isolated coding session (read/write/edit/bash) ----
 
-async function crafterExecute(task: string, _ctx: { cwd: string }): Promise<string> {
-  return `Crafter: implement this — ${task}`;
+async function crafterExecute(task: string, ctx: { cwd: string }): Promise<string> {
+  // Hard constraint (PRD): never let Crafter touch disk without a plan existing.
+  // The orchestrator writes the plan file before executing steps, so an active
+  // plan is present during a real run; a direct, plan-less Crafter call is refused.
+  const activePlans = await listActivePlans();
+  if (activePlans.length === 0) {
+    throw new Error(
+      "Crafter refused: no active plan in docs/tasks/. Draft/approve a plan first " +
+        "(run /summoner <task>), then implement.",
+    );
+  }
+
+  return runAgentSession({
+    cwd: ctx.cwd,
+    tools: CRAFTER_TOOLS,
+    task:
+      `${CRAFTER_PROMPT}\n\n` +
+      `Implement the following. When done, report concisely WHICH FILES you changed ` +
+      `(one per line, repo-relative path) and what you did:\n\n${task}`,
+  });
 }
 
-// ---- Gatekeeper: runs basic verification ----
+// ---- Gatekeeper: isolated read-only verification session (no write/edit) ----
 
 async function gatekeeperExecute(task: string, ctx: { cwd: string }): Promise<string> {
-  const findings: string[] = [];
-  const filePattern = /[\w\/.-]+\.(ts|js|tsx|jsx)$/;
-  const mentionedFiles = task.match(new RegExp(filePattern, "g"));
-
-  if (mentionedFiles) {
-    for (const file of mentionedFiles.slice(0, 10)) {
-      const fullPath = resolve(ctx.cwd, file);
-      try {
-        await access(fullPath, constants.R_OK);
-        const content = await readFile(fullPath, "utf8");
-        if (content.includes("console.log(")) findings.push(`${file}: console.log`);
-        if (content.includes("TODO") || content.includes("FIXME")) findings.push(`${file}: TODO/FIXME`);
-      } catch { /* pre-existing, skip */ }
-    }
-  }
-
-  if (findings.length === 0) return "Gatekeeper: all clear";
-  return findings.join("\n");
+  return runAgentSession({
+    cwd: ctx.cwd,
+    tools: GATEKEEPER_TOOLS,
+    task:
+      `${GATEKEEPER_PROMPT}\n\n` +
+      `Verify the completed work below. Run tests / functional checks as needed. ` +
+      `Report EVERY finding as a line starting with "FINDING:", and mark each as ` +
+      `"IN-SCOPE" (caused by this task) or "OUT-OF-SCOPE" (pre-existing). If clean, ` +
+      `say so explicitly. You cannot edit files — only report.\n\n${task}`,
+  });
 }
 
 // ---- 4.2 Built-in agent definitions ----
@@ -193,25 +165,46 @@ Call summon_gatekeeper with a list of files to review after implementation.
 Gatekeeper checks for issues (console.log, TODOs, missing files).
 Gatekeeper never edits files — it only reports findings.`;
 
+/** Role → execute fn, so the orchestrator runs agents through the same path as the tools. */
+const EXECUTORS: Record<
+  string,
+  (task: string, ctx: { cwd: string }) => Promise<string>
+> = {
+  scout: scoutExecute,
+  crafter: crafterExecute,
+  gatekeeper: gatekeeperExecute,
+};
+
+/** Run a built-in agent role to completion, returning its final report text. */
+export async function runAgent(
+  role: string,
+  task: string,
+  cwd: string,
+): Promise<string> {
+  const exec = EXECUTORS[role];
+  if (!exec) throw new Error(`Unknown agent role: ${role}`);
+  return exec(task, { cwd });
+}
+
 export function registerBuiltinAgents(pi: ExtensionAPI): void {
   registerAgent(pi, {
     name: "scout",
     systemPrompt: SCOUT_PROMPT,
-    tools: ["read", "bash", "grep", "find"],
+    tools: SCOUT_TOOLS,
     canDispatchWithoutApproval: true,
   }, scoutExecute);
 
   registerAgent(pi, {
     name: "crafter",
     systemPrompt: CRAFTER_PROMPT,
-    tools: ["read", "write", "edit", "bash"],
+    tools: CRAFTER_TOOLS,
     canDispatchWithoutApproval: false,
   }, crafterExecute);
 
   registerAgent(pi, {
     name: "gatekeeper",
     systemPrompt: GATEKEEPER_PROMPT,
-    tools: ["read", "bash", "grep", "find"],
+    tools: GATEKEEPER_TOOLS,
     canDispatchWithoutApproval: false,
   }, gatekeeperExecute);
 }

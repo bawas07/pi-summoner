@@ -23,11 +23,15 @@
     "url": "https://github.com/bawas07/pi-summoner"
   },
   "scripts": {
-    "test": "node --import tsx --test src/**/*.test.ts",
+    "typecheck": "tsc --noEmit",
+    "test": "tsc --noEmit && node --import tsx --test src/**/*.test.ts",
     "test:watch": "node --import tsx --test --watch src/**/*.test.ts"
   },
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": "*"
+  },
+  "dependencies": {
+    "typebox": "^1.1.38"
   },
   "devDependencies": {
     "@types/node": "^22.20.0",

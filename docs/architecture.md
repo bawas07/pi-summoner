@@ -4,7 +4,7 @@
 
 ## Runtime model
 
-`/summoner` runs *inside* the user's existing pi session as a normal extension. In v3, it's no longer purely command-triggered — it hooks `pi.on("turn_start", ...)` (or the nearest equivalent per-turn lifecycle event) to evaluate every conversation turn against the two ambient triggers (Scout-need, implement-intent), in addition to still registering `/summoner <task>` as a manual override via `pi.registerCommand`. Either path leads to the same place: the **Main Agent orchestrator**, which spawns and manages separate `pi --mode rpc` subprocesses, one per summoned sub-agent. Those subprocesses are real, independent pi sessions; Main Agent talks to them purely over RPC (JSONL stdin/stdout), and surfaces them to the user as tmux windows.
+`/summoner` runs *inside* the user's existing pi session as a normal extension. In v3, it's no longer purely command-triggered — it hooks `pi.on("turn_start", ...)` (or the nearest equivalent per-turn lifecycle event) to evaluate every conversation turn against the two ambient triggers (Scout-need, implement-intent), in addition to still registering `/summoner <task>` as a manual override via `pi.registerCommand`. Either path leads to the same place: the **Main Agent orchestrator**, which creates separate isolated agent sessions, one per summoned sub-agent, via the SDK's in-process `createAgentSession()` (not `pi --mode rpc` OS subprocesses — see the `agent-session.ts` note below). Each session is fully isolated (own context, tools, model, thinking level); the orchestrator runs it to completion and reads back its final text. (tmux window-per-agent visibility is a later roadmap phase layered on top.)
 
 ```mermaid
 flowchart LR
@@ -32,7 +32,7 @@ Following pi.dev's standard extension layout (`index.ts` entry point + helper mo
 ├── trigger.ts             # Ambient trigger evaluation: Scout-need + implement-intent detection
 ├── orchestrator.ts        # Main Agent loop: decide → plan → summon → loop
 ├── agents.ts              # Agent role definitions (Scout/Crafter/Gatekeeper) - model defaults, prompts
-├── rpc-client.ts           # Wraps spawning + talking to a pi --mode rpc subprocess
+├── agent-session.ts        # Runs an isolated sub-agent via createAgentSession() (replaces rpc-client.ts)
 ├── tmux.ts                 # tmux window create/destroy/rename, /watch command logic
 ├── ledger.ts               # Ledger: in-memory store + read/write helpers
 ├── plan-file.ts            # Plan file read/write/checkbox-update/archive logic
@@ -45,14 +45,27 @@ Project-local override goes in `.pi/extensions/summoner/` with the same internal
 
 ## Core modules
 
-### `rpc-client.ts` — subprocess wrapper
+### `agent-session.ts` — isolated sub-agent sessions
 
-Wraps everything needed to spawn and drive one sub-agent subprocess. One instance of this per summoned agent.
+> **Implementation note (supersedes the original `rpc-client.ts` plan):** we do **not**
+> spawn `pi --mode rpc` OS subprocesses. Pi exposes an in-process SDK function,
+> `createAgentSession()`, that creates a fully isolated agent session (its own
+> context, tool set, model, thinking level) within the current process — the same
+> mechanism `tintinweb/pi-subagents` uses. This is simpler and avoids the fragile
+> JSONL stdout framing of RPC mode. tmux window-per-agent (Phase 2 of the roadmap)
+> becomes a presentation concern layered on top, not a transport requirement.
 
-- **Spawn**: `pi --mode rpc --no-session --model <provider/id:thinking>` via Node's `child_process.spawn`, run inside a tmux window (see `tmux.ts`) rather than detached, so it's watchable.
-- **Send**: write JSONL commands to the subprocess's stdin (`prompt`, `get_state`, `set_model`, `abort`, etc.) per the RPC protocol.
-- **Receive**: a JSONL line reader on stdout (matching the framing rules — split on `\n` only, since Node's `readline` is not protocol-compliant here) that demuxes `response` objects (correlated by `id`) from `event` streams.
-- **Health check**: periodic `get_state` call with a timeout. On timeout/no-response, signal back to the orchestrator that this instance needs killing + resummoning.
+Wraps everything needed to run one sub-agent to completion. One call per summon.
+
+- **Create**: `createAgentSession({ cwd, tools, thinkingLevel })`. Model defaults to the
+  session-scoped model unless overridden (per-role model assignment is a later phase).
+- **Run**: `await session.prompt(task)` — resolves only when the agent's turn is fully
+  complete (after any tool calls).
+- **Result**: read the final assistant text from `session.messages` once `prompt()`
+  resolves (with the last `agent_end` event as a fallback), then `session.dispose()`.
+- **Read-only enforcement is architectural** via per-role tool allowlists:
+  Scout `[read, grep, find, ls]`, Gatekeeper `[+ bash]` (no `write`/`edit`), Crafter the
+  full coding set. Gatekeeper physically cannot mutate files.
 
 ### `trigger.ts` — ambient trigger evaluation
 
