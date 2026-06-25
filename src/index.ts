@@ -20,11 +20,21 @@ import { handleTrigger, handleManualSummon, isAwaitingApproval, setNotifier, typ
 // ---- 8.1 Entry point ----
 
 export default function (pi: ExtensionAPI): void {
-  // Wire notifier: use pi.sendUserMessage for user-visible messages
+  // Wire notifier: console for debug, pi.sendUserMessage with followUp for chat.
+  // Must use streamingBehavior: 'followUp' to avoid "Agent is already processing".
   const chatNotifier: Notifier = {
-    info: (msg) => pi.sendUserMessage(`[summoner] ${msg}`),
-    warn: (msg) => pi.sendUserMessage(`[summoner] ⚠️ ${msg}`),
-    error: (msg) => pi.sendUserMessage(`[summoner] ❌ ${msg}`),
+    info: (msg) => {
+      console.log(`[summoner] ${msg}`);
+      pi.sendUserMessage(`[summoner] ${msg}`, { streamingBehavior: "followUp" });
+    },
+    warn: (msg) => {
+      console.warn(`[summoner] ${msg}`);
+      pi.sendUserMessage(`[summoner] ⚠️ ${msg}`, { streamingBehavior: "followUp" });
+    },
+    error: (msg) => {
+      console.error(`[summoner] ${msg}`);
+      pi.sendUserMessage(`[summoner] ❌ ${msg}`, { streamingBehavior: "followUp" });
+    },
   };
   setNotifier(chatNotifier);
 
@@ -48,14 +58,17 @@ export default function (pi: ExtensionAPI): void {
     handler: async (args, ctx) => {
       const task = args.trim();
       if (!task) {
-        // Commands don't have ctx.ui — use pi.sendUserMessage instead
         pi.sendUserMessage(
           "Usage: /summoner <task description>\nExample: /summoner fix the login redirect bug",
+          { streamingBehavior: "followUp" },
         );
         return;
       }
 
-      pi.sendUserMessage(`Summoning orchestrator for: ${task}`);
+      pi.sendUserMessage(
+        `Summoning orchestrator for: ${task}`,
+        { streamingBehavior: "followUp" },
+      );
 
       await handleManualSummon(task, {
         cwd: ctx.cwd,
