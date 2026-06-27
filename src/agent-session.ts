@@ -1,23 +1,21 @@
 /**
- * Agent session runner — spawns isolated sub-agent sessions in-process.
+ * Agent session runner — spawns isolated sub-agent sessions as child processes.
  *
- * Replaces the previous `pi --mode rpc` child-process transport (rpc-client.ts).
- * Uses the SDK's `createAgentSession()` — the same mechanism tintinweb/pi-subagents
- * uses — which gives each summoned agent its own isolated context, tool set, model,
- * and thinking level, without the fragility of spawning + JSONL framing an OS process.
+ * Each summoned agent gets its own `pi --mode json -p` subprocess with a
+ * role-scoped tool allowlist. JSONL stdout is parsed for progress events and
+ * the final assistant text is returned to the orchestrator.
  *
- * Read-only enforcement is architectural: Scout/Gatekeeper are given tool allowlists
- * that physically exclude `write`/`edit`. Only Crafter gets them.
+ * No external dependencies beyond Node.js built-ins. No dependency on
+ * pi-subagents — this is a minimal reimplementation of the core idea:
+ *   spawn("pi", ["--mode", "json", ...]) → parse JSONL → return text.
+ *
+ * Read-only enforcement is architectural: Scout/Gatekeeper get tool allowlists
+ * that exclude "write"/"edit". Only Crafter gets them.
  */
 
-import { createAgentSession, SessionManager } from "@earendil-works/pi-coding-agent";
-import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
-import type { ThinkingLevel } from "./types";
+import { spawn } from "node:child_process";
 
-/** Hard ceiling so a stuck sub-agent fails loudly instead of hanging forever. */
-const DEFAULT_TIMEOUT_MS = 4 * 60 * 1000;
-
-// ---- Built-in pi tool names (confirmed against the installed SDK) ----
+// ---- Built-in pi tool names ----
 
 /** Pure read-only search — no bash, no mutation. Scout. */
 export const SCOUT_TOOLS = ["read", "grep", "find", "ls"];
@@ -27,124 +25,177 @@ export const GATEKEEPER_TOOLS = ["read", "grep", "find", "ls", "bash"];
 export const CRAFTER_TOOLS = ["read", "write", "edit", "bash", "grep", "find", "ls"];
 
 export interface RunAgentOptions {
-  /** Project working directory (ctx.cwd). */
+  /** Project working directory. */
   cwd: string;
-  /** The task / prompt for this agent. */
+  /** The task / prompt for this agent (includes role instructions). */
   task: string;
-  /** Tool allowlist. Omit to use pi's defaults (read/bash/edit/write). */
-  tools?: string[];
-  /** Extra (custom) tools to register in addition to the built-ins. */
-  customTools?: ToolDefinition[];
-  /** Thinking effort for this session. Omit to inherit from settings. */
-  thinkingLevel?: ThinkingLevel;
-  /** Live progress hook — fired on tool activity and streamed text. */
+  /** Tool allowlist. */
+  tools: string[];
+  /** Live progress hook — fired on tool activity. */
   onProgress?: (status: string) => void;
-  /** Override the hang-guard timeout (ms). */
+  /** Override the hang-guard timeout (ms). Default: 4 minutes. */
   timeoutMs?: number;
 }
 
+/** Hard ceiling so a stuck sub-agent fails loudly instead of hanging forever. */
+const DEFAULT_TIMEOUT_MS = 4 * 60 * 1000;
+
 /**
- * Run a single sub-agent session to completion and return its final assistant text.
+ * Run a single sub-agent as a `pi` child process and return its final assistant text.
  *
- * `session.prompt()` resolves only when the agent's turn is fully complete (after any
- * tool calls), so the final text is read from `session.messages` once it resolves.
- * Progress events are surfaced via `onProgress` so callers can show live activity, and
- * a timeout aborts the session so it can never hang silently.
+ * Spawns: `pi --mode json -p --no-session --tools "<tools>" "Task: <task>"`
+ * Parses JSONL stdout for progress and the final response.
+ * The subprocess is killed on timeout.
  */
 export async function runAgentSession(opts: RunAgentOptions): Promise<string> {
-  const sessionOpts: Parameters<typeof createAgentSession>[0] = {
+  const args = [
+    "--mode", "json",
+    "-p",
+    "--no-session",
+    "--tools", opts.tools.join(","),
+    `Task: ${opts.task}`,
+  ];
+
+  opts.onProgress?.(`spawning pi ${opts.tools.join(",")}…`);
+
+  const child = spawn("pi", args, {
     cwd: opts.cwd,
-    // Isolate the sub-agent: an in-memory session keeps its messages OUT of the
-    // user's main on-disk session, so Scout/Crafter/Gatekeeper transcripts don't
-    // flood the main chat. We surface only their final report + live progress.
-    sessionManager: SessionManager.inMemory(opts.cwd),
-  };
-  if (opts.tools) sessionOpts.tools = opts.tools;
-  if (opts.customTools && opts.customTools.length > 0) {
-    sessionOpts.customTools = opts.customTools;
-  }
-  if (opts.thinkingLevel) sessionOpts.thinkingLevel = opts.thinkingLevel;
+    stdio: ["ignore", "pipe", "pipe"],
+    env: { ...process.env },
+  });
 
-  const { session } = await createAgentSession(sessionOpts);
+  let lastAssistantText = "";
+  let stderr = "";
+  let settled = false;
+  let timedOut = false;
 
-  let lastEndText: string | null = null;
-  const unsubscribe = session.subscribe((event) => {
-    switch (event.type) {
-      case "tool_execution_start":
-        opts.onProgress?.(`running ${event.toolName}…`);
-        break;
-      case "message_update": {
-        const snippet = extractAssistantText([
-          (event as { message?: unknown }).message,
-        ]);
-        if (snippet) opts.onProgress?.(snippet.trim().slice(-100));
-        break;
+  // ---- Timeout guard ----
+  const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+  const timeout = setTimeout(() => {
+    if (settled) return;
+    timedOut = true;
+    child.kill("SIGTERM");
+    setTimeout(() => { if (!child.killed) child.kill("SIGKILL"); }, 3000);
+  }, timeoutMs);
+
+  // ---- Stdout: parse JSONL events ----
+  let buf = "";
+  child.stdout.on("data", (chunk: Buffer) => {
+    buf += chunk.toString();
+    const lines = buf.split("\n");
+    buf = lines.pop() ?? "";
+
+    for (const line of lines) {
+      if (!line.trim()) continue;
+
+      let event: { type?: string; message?: JsonlMessage; toolName?: string };
+      try {
+        event = JSON.parse(line);
+      } catch {
+        continue; // non-JSON output, ignore
       }
-      case "agent_end":
-        if (!event.willRetry) {
-          lastEndText = extractAssistantText(event.messages);
+
+      // Progress: tool activity
+      if (event.type === "tool_execution_start" && event.toolName) {
+        opts.onProgress?.(`running ${event.toolName}…`);
+      }
+
+      // Progress: tool results
+      if (event.type === "tool_result_end") {
+        opts.onProgress?.("tool result received");
+      }
+
+      // Collect assistant text from message_end events
+      if (
+        event.type === "message_end" &&
+        event.message?.role === "assistant"
+      ) {
+        const text = extractText(event.message);
+        if (text) {
+          lastAssistantText = text;
+          // Show snippet of what the agent is thinking/saying
+          const snippet = text.trim().split("\n").slice(-3).join(" ");
+          if (snippet) opts.onProgress?.(snippet.slice(-120));
         }
-        break;
+      }
+
+      // agent_end: final signal, but we continue reading until process closes
     }
   });
 
-  // Hang guard: abort the session if it runs past the timeout.
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  const timeout = new Promise<never>((_, reject) => {
-    timer = setTimeout(() => {
-      void session.abort();
-      reject(
-        new Error(
-          `Sub-agent timed out after ${Math.round(
-            (opts.timeoutMs ?? DEFAULT_TIMEOUT_MS) / 1000,
-          )}s`,
-        ),
-      );
-    }, opts.timeoutMs ?? DEFAULT_TIMEOUT_MS);
+  // ---- Stderr: collect for error reporting ----
+  child.stderr.on("data", (chunk: Buffer) => {
+    stderr += chunk.toString();
   });
 
-  try {
-    await Promise.race([session.prompt(opts.task), timeout]);
-    const finalText =
-      extractAssistantText(session.messages as unknown[]) ?? lastEndText;
-    return finalText && finalText.trim()
-      ? finalText
-      : "(agent completed but returned no text)";
-  } finally {
-    if (timer) clearTimeout(timer);
-    unsubscribe();
-    session.dispose();
+  // ---- Wait for process to close ----
+  const exitCode = await new Promise<number>((resolve, reject) => {
+    child.on("close", (code) => {
+      settled = true;
+      clearTimeout(timeout);
+      resolve(code ?? 1);
+    });
+    child.on("error", (err) => {
+      settled = true;
+      clearTimeout(timeout);
+      reject(err);
+    });
+  });
+
+  // Drain any remaining buffered stdout lines
+  if (buf.trim()) {
+    for (const line of buf.split("\n")) {
+      if (!line.trim()) continue;
+      try {
+        const event = JSON.parse(line) as { type?: string; message?: JsonlMessage };
+        if (
+          event.type === "message_end" &&
+          event.message?.role === "assistant"
+        ) {
+          const text = extractText(event.message);
+          if (text) lastAssistantText = text;
+        }
+      } catch { /* ignore */ }
+    }
   }
+
+  // ---- Determine result ----
+  if (timedOut) {
+    throw new Error(
+      `Sub-agent timed out after ${Math.round(timeoutMs / 1000)}s`,
+    );
+  }
+
+  if (exitCode !== 0) {
+    const errMsg = stderr.trim() || `Sub-agent exited with code ${exitCode}`;
+    if (lastAssistantText) {
+      // Agent produced output but errored — return what we have, let the
+      // orchestrator decide. This matches pi-subagents' behavior.
+      return lastAssistantText.trim();
+    }
+    throw new Error(errMsg);
+  }
+
+  return lastAssistantText.trim() || "(agent completed but returned no text)";
 }
 
-// ---- Text extraction (defensive: handles string or content-part array) ----
+// ---- Helpers ----
 
-/** Pull the text of the last assistant message out of a message list. */
-function extractAssistantText(messages: unknown[]): string | null {
-  if (!Array.isArray(messages)) return null;
-
-  for (let i = messages.length - 1; i >= 0; i--) {
-    const msg = messages[i] as { role?: string; content?: unknown } | null;
-    if (!msg || msg.role !== "assistant") continue;
-
-    const text = contentToText(msg.content);
-    if (text && text.trim()) return text;
-  }
-  return null;
+/** Shape of a message in the JSONL stream. */
+interface JsonlMessage {
+  role?: string;
+  content?: string | Array<{ type?: string; text?: string }>;
 }
 
-/** Normalize a message `content` (string | parts[]) into plain text. */
-function contentToText(content: unknown): string | null {
-  if (typeof content === "string") return content;
-  if (!Array.isArray(content)) return null;
+/** Extract plain text from a message's content (string or content-part array). */
+function extractText(msg: JsonlMessage): string {
+  if (typeof msg.content === "string") return msg.content;
+  if (!Array.isArray(msg.content)) return "";
 
-  const texts = content
-    .map((part) => {
-      const p = part as { type?: string; text?: string } | null;
-      if (p && p.type === "text" && typeof p.text === "string") return p.text;
-      return null;
-    })
-    .filter((t): t is string => t !== null);
-
-  return texts.length > 0 ? texts.join("\n") : null;
+  return msg.content
+    .filter((p): p is { type: "text"; text: string } =>
+      p.type === "text" && typeof p.text === "string",
+    )
+    .map((p) => p.text)
+    .join("\n");
 }

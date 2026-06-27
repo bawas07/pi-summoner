@@ -22,7 +22,6 @@ import {
   GATEKEEPER_TOOLS,
 } from "./agent-session";
 import { listActivePlans } from "./plan-file";
-import { fffTools } from "./fff";
 
 /** Options passed to each agent executor. */
 interface ExecOpts {
@@ -114,20 +113,12 @@ export function registerAgent(
 // ---- Scout: isolated read-only search session ----
 
 async function scoutExecute(task: string, opts: ExecOpts): Promise<string> {
-  // Use FFF-powered search tools when available; otherwise built-in grep/find.
-  const fff = await fffTools(opts.cwd);
-  const fffNudge = fff.length
-    ? `\n\nFFF search is available — PREFER fff_grep / fff_find over the built-in ` +
-      `grep / find for speed and ranking.`
-    : "";
-
   return runAgentSession({
     cwd: opts.cwd,
     tools: SCOUT_TOOLS,
-    customTools: fff,
     onProgress: opts.onProgress,
     task:
-      `${SCOUT_PROMPT}${fffNudge}\n\n` +
+      `${SCOUT_PROMPT}\n\n` +
       `Search the codebase for the following and report back the minimal relevant ` +
       `slices (file paths + line numbers + the few key lines), never whole files:\n\n${task}`,
   });
@@ -161,12 +152,9 @@ async function crafterExecute(task: string, opts: ExecOpts): Promise<string> {
 // ---- Gatekeeper: isolated read-only verification session (no write/edit) ----
 
 async function gatekeeperExecute(task: string, opts: ExecOpts): Promise<string> {
-  const fff = await fffTools(opts.cwd);
-
   return runAgentSession({
     cwd: opts.cwd,
     tools: GATEKEEPER_TOOLS,
-    customTools: fff,
     onProgress: opts.onProgress,
     task:
       `${GATEKEEPER_PROMPT}\n\n` +
