@@ -1,41 +1,54 @@
 {
   "name": "agent-summoner",
-  "version": "0.1.0",
-  "description": "Ambient multi-agent orchestration for pi — Scout, Crafter, Gatekeeper. Phase 1: core loop with heuristic triggers and RPC subprocesses.",
-  "type": "module",
-  "main": "src/index.ts",
-  "files": [
-    "src/**/*.ts"
-  ],
-  "keywords": [
-    "pi-extension",
-    "agent",
-    "orchestrator",
-    "summoner"
-  ],
+  "version": "0.0.0",
+  "private": true,
+  "description": "Two-mode pi extension with Scout, Crafter, and Gatekeeper agents. Plan mode for analysis and design; Crafting mode delegates implementation to Crafter with mandatory Gatekeeper review.",
+  "author": "Zoych (bawas07)",
   "license": "MIT",
-  "author": "Zoych",
-  "pi": {
-    "extensions": ["./src"]
-  },
   "repository": {
     "type": "git",
-    "url": "https://github.com/bawas07/pi-summoner"
+    "url": "https://github.com/bawas07/agent-summoner.git"
   },
-  "scripts": {
-    "typecheck": "tsc --noEmit",
-    "test": "tsc --noEmit && node --import tsx --test src/**/*.test.ts",
-    "test:watch": "node --import tsx --test --watch src/**/*.test.ts"
+  "homepage": "https://github.com/bawas07/agent-summoner#readme",
+  "bugs": {
+    "url": "https://github.com/bawas07/agent-summoner/issues"
   },
+  "keywords": [
+    "pi",
+    "pi-extension",
+    "subagent",
+    "agent",
+    "autonomous"
+  ],
   "peerDependencies": {
-    "@earendil-works/pi-coding-agent": "*"
+    "@earendil-works/pi-ai": ">=0.74.0",
+    "@earendil-works/pi-coding-agent": ">=0.74.0",
+    "@earendil-works/pi-tui": ">=0.74.0"
   },
   "dependencies": {
-    "typebox": "^1.1.38"
+    "@sinclair/typebox": "^0.34.49",
+    "nanoid": "^5.0.0"
+  },
+  "scripts": {
+    "build": "tsc",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:e2e": "vitest run e2e --reporter=verbose",
+    "typecheck": "tsc --noEmit",
+    "lint": "biome check src/ test/",
+    "lint:fix": "biome check --fix src/ test/"
   },
   "devDependencies": {
-    "@types/node": "^22.20.0",
-    "tsx": "^4.22.4",
-    "typescript": "^5.6.0"
+    "@biomejs/biome": "^2.4.14",
+    "@types/node": "^25.5.0",
+    "typescript": "^6.0.0",
+    "vitest": "^4.0.18"
+  },
+  "pi": {
+    "extensions": [
+      "./src/index.ts"
+    ],
+    "video": "https://github.com/bawas07/agent-summoner/raw/master/media/demo.mp4",
+    "image": "https://github.com/bawas07/agent-summoner/raw/master/media/screenshot.png"
   }
 }
