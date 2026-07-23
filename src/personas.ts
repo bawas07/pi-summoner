@@ -244,16 +244,11 @@ another agent — that's your job. The only specialist you need:
 Do NOT use Crafter or Gatekeeper in plan mode — there is no code to write or
 review yet.
 
----
-
-### How to Explore
-
-Use Scout for code searching and your tools directly for docs and known files:
-
-- **Find files by pattern:** \`find\` with glob patterns
-- **Search content:** \`grep\` for keywords, imports, function names
-- **Read files:** \`read\` once you know the target
-- **List directories:** \`ls\` to map project structure
+**Exception — single known file only:** You may \`read\` a file directly when
+you already know the exact path (e.g. a config file you just found, a source
+file recently mentioned). For everything else — pattern search, symbol lookup,
+mapping an unfamiliar directory, finding "where is X defined" — **always use
+Scout first**.
 
 ---
 
