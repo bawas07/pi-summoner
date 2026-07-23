@@ -1,128 +1,144 @@
 /**
- * Shared types for the agent-summoner extension.
- * All modules import from here — no circular dependencies.
+ * types.ts — Type definitions for the subagent system.
  */
 
-// ---- Ledger ----
+import type { ThinkingLevel } from "@earendil-works/pi-ai";
+import type { AgentSession } from "@earendil-works/pi-coding-agent";
+import type { LifetimeUsage } from "./usage.js";
 
-export type LedgerAction = "read" | "write" | "delete";
+export type { ThinkingLevel };
 
-export interface LedgerEntry {
-  /** Absolute or repo-relative file path */
-  file: string;
-  /** Which agent instance touched it (e.g. "crafter-1") */
-  agent: string;
-  /** What was done */
-  action: LedgerAction;
-  /** Unix epoch milliseconds */
-  timestamp: number;
-}
+/** Agent type: any string name (built-in defaults or user-defined). */
+export type SubagentType = string;
 
-// ---- Agent Registry ----
+/** Names of the three embedded default agents. */
+export const DEFAULT_AGENT_NAMES = ["general-purpose", "Scout", "Crafter", "Gatekeeper"] as const;
 
-export interface ModelRef {
-  provider: string;
-  modelId: string;
-}
+/** Memory scope for persistent agent memory. */
+export type MemoryScope = "user" | "project" | "local";
 
-/** Thinking effort level passed to pi --model provider/id:thinking */
-export type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
+/** Isolation mode for agent execution. */
+export type IsolationMode = "worktree";
 
-/** Pi tool names that can be assigned to an agent */
-export type ToolName = string;
-
-export interface AgentDefinition {
-  /** Unique kebab-case name, becomes tool name summon_<name> */
+/** Unified agent configuration — used for both default and user-defined agents. */
+export interface AgentConfig {
   name: string;
-  /** LLM-readable system prompt for the sub-agent */
+  displayName?: string;
+  description: string;
+  builtinToolNames?: string[];
+  /** Raw `ext:` selector entries from the `tools:` CSV, e.g. ["ext:foo", "ext:bar/x"].
+   * Presence of any entry flips extension tools to an explicit allowlist. */
+  extSelectors?: string[];
+  /** Tool denylist — these tools are removed even if `builtinToolNames` or extensions include them. */
+  disallowedTools?: string[];
+  /** true = inherit all, string[] = only listed, false = none */
+  extensions: true | string[] | false;
+  /** Extension-name denylist applied after the `extensions:` include set. Exclude wins.
+   * Plain canonical names only (case-insensitive); no paths, no wildcard. */
+  excludeExtensions?: string[];
+  /** true = inherit all, string[] = only listed, false = none */
+  skills: true | string[] | false;
+  model?: string;
+  thinking?: ThinkingLevel;
+  maxTurns?: number;
+  /** Persist this subagent as a normal pi session instead of keeping it in memory only. */
+  persistSession?: boolean;
+  /** Optional session directory used when persistSession is true. Omitted = pi's normal session location. */
+  sessionDir?: string;
   systemPrompt: string;
-  /** Model for subprocess spawn (Phase 2). Not used in Phase 1. */
-  defaultModel?: ModelRef;
-  /** Thinking level for subprocess spawn (Phase 2). Not used in Phase 1. */
-  defaultThinking?: ThinkingLevel;
-  /** Tools available to this agent. Gatekeeper's excludes write/edit — architectural enforcement. */
-  tools: ToolName[];
-  /** true for Scout (read-only, low risk), false for Crafter/Gatekeeper */
-  canDispatchWithoutApproval: boolean;
+  promptMode: "replace" | "append";
+  /** Default for spawn: fork parent conversation. undefined = caller decides. */
+  inheritContext?: boolean;
+  /** Default for spawn: run in background. undefined = caller decides. */
+  runInBackground?: boolean;
+  /** Default for spawn: no extension tools. undefined = caller decides. */
+  isolated?: boolean;
+  /** Persistent memory scope — agents with memory get a persistent directory and MEMORY.md */
+  memory?: MemoryScope;
+  /** Isolation mode — "worktree" runs the agent in a temporary git worktree */
+  isolation?: IsolationMode;
+  /** true = this is an embedded default agent (informational) */
+  isDefault?: boolean;
+  /** false = agent is hidden from the registry */
+  enabled?: boolean;
+  /** Where this agent was loaded from */
+  source?: "default" | "project" | "global";
 }
 
-/** Represents one running sub-agent instance */
-export type AgentStatus = "idle" | "working" | "done" | "failed";
+export type JoinMode = 'async' | 'group' | 'smart';
 
-export interface AgentInstance {
-  /** Unique instance id (e.g. "crafter-1", "scout-2") */
+export interface AgentRecord {
   id: string;
-  /** Matches AgentDefinition.name */
-  role: string;
-  model: ModelRef;
-  thinking: ThinkingLevel;
-  status: AgentStatus;
-  /** Task description for display */
-  task: string;
-  /** tmux window name (Phase 2) — set but unused in Phase 1 */
-  windowName: string;
-}
-
-// ---- Ambient Trigger ----
-
-export interface TriggerResult {
-  /** Does Main Agent need codebase information right now (excluding docs)? */
-  needsScout: boolean;
-  /** Is the user indicating intent to implement a fix or feature? */
-  implementIntent: boolean;
-}
-
-// ---- Plan Files ----
-
-export type TrustMode = "trust" | "checkpoint";
-
-export interface PlanStep {
+  type: SubagentType;
   description: string;
-  done: boolean;
+  status: "queued" | "running" | "completed" | "steered" | "aborted" | "stopped" | "error";
+  result?: string;
+  error?: string;
+  toolUses: number;
+  startedAt: number;
+  completedAt?: number;
+  session?: AgentSession;
+  abortController?: AbortController;
+  promise?: Promise<string>;
+  groupId?: string;
+  joinMode?: JoinMode;
+  /** Set when result was already consumed via get_subagent_result — suppresses completion notification. */
+  resultConsumed?: boolean;
+  /** Steering messages queued before the session was ready. */
+  pendingSteers?: string[];
+  /** Worktree info if the agent is running in an isolated worktree. */
+  worktree?: { path: string; branch: string; baseSha: string; workPath: string };
+  /** Worktree cleanup result after agent completion. */
+  worktreeResult?: { hasChanges: boolean; branch?: string };
+  /** The tool_use_id from the original Agent tool call. */
+  toolCallId?: string;
+  /** Path to the streaming output transcript file. */
+  outputFile?: string;
+  /** Cleanup function for the output file stream subscription. */
+  outputCleanup?: () => void;
+  /**
+   * Lifetime usage breakdown, accumulated via `message_end` events. Survives
+   * compaction. Total = input + output + cacheWrite (cacheRead deliberately
+   * excluded — see issue #38). Initialized to zeros at spawn.
+   */
+  lifetimeUsage: LifetimeUsage;
+  /** Number of times this agent's session has compacted. Initialized to 0 at spawn. */
+  compactionCount: number;
+  /** Resolved spawn params, captured for UI display. Fixed at spawn time. */
+  invocation?: AgentInvocation;
 }
 
-export interface PlanFile {
-  /** Full path: docs/tasks/{timestamp}-{short-title}.md */
-  path: string;
-  /** Short human-readable title */
-  title: string;
-  /** ISO timestamp string from filename */
-  createdAt: string;
-  /** 🙈 trust or 🔍 checkpoint — set at approval time */
-  trustMode: TrustMode;
-  /** Ordered checklist steps */
-  steps: PlanStep[];
+export interface AgentInvocation {
+  /** Short display name, e.g. "haiku" — only set when different from parent. */
+  modelName?: string;
+  thinking?: ThinkingLevel;
+  maxTurns?: number;
+  isolated?: boolean;
+  inheritContext?: boolean;
+  runInBackground?: boolean;
+  isolation?: IsolationMode;
 }
 
-// ---- Gatekeeper ----
-
-export type GatekeeperFindingCategory = "functional" | "quality";
-
-export interface GatekeeperFinding {
-  /** Human-readable description of the issue */
+/** Details attached to custom notification messages for visual rendering. */
+export interface NotificationDetails {
+  id: string;
   description: string;
-  /** Was this caused by this task's own agents? */
-  inScope: boolean;
-  /** What kind of issue */
-  category: GatekeeperFindingCategory;
-  /** Which file(s) are affected */
-  files: string[];
+  status: string;
+  toolUses: number;
+  turnCount: number;
+  maxTurns?: number;
+  totalTokens: number;
+  durationMs: number;
+  outputFile?: string;
+  error?: string;
+  resultPreview: string;
+  /** Additional agents in a group notification. */
+  others?: NotificationDetails[];
 }
 
-// ---- Orchestrator State ----
-
-export type OrchestratorPhase =
-  | "idle"
-  | "scouting"
-  | "planning"
-  | "awaiting_approval"
-  | "executing"
-  | "gatekeeping"
-  | "done";
-
-export interface OrchestratorState {
-  phase: OrchestratorPhase;
-  currentPlan: PlanFile | null;
-  currentStepIndex: number;
-  activeAgents: AgentInstance[];
+export interface EnvInfo {
+  isGitRepo: boolean;
+  branch: string;
+  platform: string;
 }
+
