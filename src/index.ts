@@ -314,22 +314,44 @@ export default function (pi: ExtensionAPI) {
 
     // Read-only tools — always allowed
     if (event.toolName === "read" || event.toolName === "grep" ||
-        event.toolName === "find" || event.toolName === "ls") {
+        event.toolName === "find" || event.toolName === "ls" ||
+        event.toolName === "fffind" || event.toolName === "ffgrep") {
       return;
     }
 
-    // Bash — disabled entirely in plan mode (can create/delete/modify arbitrarily)
+    // plan_checkpoint — always allowed (official escape hatch from plan mode)
+    if (event.toolName === "plan_checkpoint") {
+      return;
+    }
+
+    // Bash — allow read-only commands; block destructive ones
     if (event.toolName === "bash") {
-      return {
-        block: true,
-        reason: "🔮 Plan mode: bash is disabled. Only .md file writes are permitted.",
-      };
+      const cmd: string = (event.input as Record<string, unknown>).command as string || "";
+
+      // Block output redirection (writing to files via >, >>, 2>, &>)
+      if (/[^<]>\s*[^\s=]/.test(cmd)) {
+        return {
+          block: true,
+          reason: "🔮 Plan mode: bash file redirection is disabled. Only .md file writes are permitted.",
+        };
+      }
+
+      // Block known destructive commands
+      if (/\b(rm\b|mkdir|rmdir|mv|cp\b|chmod|chown|touch|ln\b|truncate|dd\b|mkfs)\b/.test(cmd)) {
+        return {
+          block: true,
+          reason: "🔮 Plan mode: destructive bash commands are disabled. Only .md file writes are permitted.",
+        };
+      }
+
+      // Allow read-only commands (cat, ls, grep, find, head, tail, tests, etc.)
+      return;
     }
 
     // Write / Edit — allowed only for .md files
     if (event.toolName === "write" || event.toolName === "edit") {
       const path: string | undefined = (event.input as Record<string, unknown>).path as string | undefined;
-      if (path && !path.endsWith(".md")) {
+      if (path && (!path.endsWith(".md") || !path.endsWith(".json"))) {
         return {
           block: true,
           reason: `🔮 Plan mode: only .md files can be written. "${path}" is not a .md file.`,
