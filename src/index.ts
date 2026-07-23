@@ -294,6 +294,20 @@ export default function (pi: ExtensionAPI) {
 
   // --- Cross-extension RPC via pi.events ---
   let currentCtx: ExtensionContext | undefined;
+  let unsubModeKey: (() => void) | undefined;
+
+  /** Toggle plan/crafting mode and persist. */
+  function toggleMode(ctx: { ui: { notify: (message: string, type?: "error" | "info" | "warning") => void } }) {
+    const newMode = !isPlanModeEnabled();
+    setPlanModeEnabled(newMode);
+    const modeLabel = newMode ? "plan" : "crafting";
+    const { message, level } = saveAndEmitChanged(
+      snapshotSettings(),
+      `Mode set to ${modeLabel}`,
+      (event, payload) => pi.events.emit(event, payload),
+    );
+    ctx.ui.notify(message, level);
+  }
 
   // Capture ctx from session_start for RPC spawn handler.
   pi.on("session_start", async (_event, ctx) => {
@@ -304,6 +318,16 @@ export default function (pi: ExtensionAPI) {
     updateStatusBar();
     const mode = isPlanModeEnabled() ? "🔮 planning" : "⚡ crafting";
     ctx.ui.notify(`🎉 agent-summoner is ${mode}! What do you want to do?`, "info");
+
+    // Register Shift+Tab shortcut to toggle plan/crafting mode
+    unsubModeKey?.();
+    unsubModeKey = (ctx.ui as any).onTerminalInput?.((data: string) => {
+      if (matchesKey(data, "shift+tab")) {
+        toggleMode(ctx);
+        return { consume: true };
+      }
+      return undefined;
+    });
   });
 
   // ---- Plan mode tool guard — hard enforcement ----
@@ -420,6 +444,8 @@ export default function (pi: ExtensionAPI) {
     currentCtx?.ui.setStatus("agent-summoner", undefined);
     currentCtx = undefined;
     delete (globalThis as any)[MANAGER_KEY];
+    unsubModeKey?.();
+    unsubModeKey = undefined;
     manager.abortAll();
     for (const timer of pendingNudges.values()) clearTimeout(timer);
     pendingNudges.clear();
