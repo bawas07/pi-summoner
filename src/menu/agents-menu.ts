@@ -43,6 +43,8 @@ export interface MenuDeps {
   setDisableDefaultAgents: (b: boolean) => void;
   setPlanModeEnabled: (b: boolean) => void;
   isPlanModeEnabled: () => boolean;
+  /** Optional — used so settings snapshots retain orchestrationMode. */
+  getOrchestrationMode?: () => import("../craft-orchestration.js").OrchestrationMode;
 }
 
 function getModelLabelFromConfig(model: string): string {
@@ -57,7 +59,7 @@ export function createAgentsMenuHandler(deps: MenuDeps) {
     getToolDescriptionMode,
     setDefaultJoinMode, setScopeModelsEnabled,
     setFleetViewEnabled, setToolDescriptionMode, setDisableDefaultAgents,
-    setPlanModeEnabled, isPlanModeEnabled } = deps;
+    setPlanModeEnabled, isPlanModeEnabled, getOrchestrationMode } = deps;
 
   const projectAgentsDir = () => join(process.cwd(), ".pi", "agents");
   const personalAgentsDir = () => join(getAgentDir(), "agents");
@@ -91,6 +93,7 @@ export function createAgentsMenuHandler(deps: MenuDeps) {
       toolDescriptionMode: getToolDescriptionMode(),
       fleetView: isFleetViewEnabled(),
       planMode: isPlanModeEnabled(),
+      ...(getOrchestrationMode ? { orchestrationMode: getOrchestrationMode() } : {}),
     };
   }
 

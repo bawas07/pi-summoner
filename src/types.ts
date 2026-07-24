@@ -11,8 +11,16 @@ export type { ThinkingLevel };
 /** Agent type: any string name (built-in defaults or user-defined). */
 export type SubagentType = string;
 
-/** Names of the three embedded default agents. */
-export const DEFAULT_AGENT_NAMES = ["general-purpose", "Scout", "Crafter", "Gatekeeper"] as const;
+/** Names of embedded default agents shipped in default-agents.ts. */
+export const DEFAULT_AGENT_NAMES = [
+  "general-purpose",
+  "Scout",
+  "Crafter",
+  "Gatekeeper",
+  "code-reviewer",
+  "architect-reviewer",
+  "security-auditor",
+] as const;
 
 /** Memory scope for persistent agent memory. */
 export type MemoryScope = "user" | "project" | "local";

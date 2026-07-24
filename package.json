@@ -2,7 +2,7 @@
   "name": "agent-summoner",
   "version": "0.0.0",
   "private": true,
-  "description": "Two-mode pi extension with Scout, Crafter, and Gatekeeper agents. Plan mode for analysis and design; Crafting mode delegates implementation to Crafter with mandatory Gatekeeper review.",
+  "description": "Two-mode pi extension with Scout, Crafter, and Gatekeeper. Plan mode for analysis and design; Craft mode Tech Lead nudges Crafter implementation and Gatekeeper (read-only) review.",
   "author": "Zoych (bawas07)",
   "license": "MIT",
   "repository": {

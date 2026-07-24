@@ -7,9 +7,11 @@ Custom agents can be defined in .pi/agents/<name>.md (project) or {{agentDir}}/a
 
 When using the Agent tool, specify a subagent_type parameter to select which agent type to use.
 
-## When not to use
+## When to use / when not to
 
-If the target is already known, use a direct tool — `read` for a known path, `grep`/`find` for a specific symbol or string. Reserve this tool for open-ended questions that span the codebase, or tasks that match an available agent type.
+In craft mode, prefer **Crafter** for non-trivial implementation and **Gatekeeper** for review. Use **Scout** for codebase exploration. Direct write/edit on main is for true one-liners or when the user asks you to solo.
+
+If a single known path is enough, use `read` / `grep` / `find` directly. Reserve Agent for specialist work, parallel research, or protecting the main context window.
 
 ## Usage notes
 

@@ -5,7 +5,13 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
+import {
+  type OrchestrationMode,
+  parseOrchestrationMode,
+} from "./craft-orchestration.js";
 import type { JoinMode } from "./types.js";
+
+export type { OrchestrationMode };
 
 export interface SubagentsSettings {
   maxConcurrent?: number;
@@ -68,6 +74,16 @@ export interface SubagentsSettings {
    * are restricted to .md files only. Toggle via `/mode plan` or `/mode general`.
    */
   planMode?: boolean;
+  /**
+   * Craft-mode implementation policy for the main session.
+   * - "nudge" (default): main keeps write/edit; persona + tool copy push Crafter/Gatekeeper.
+   * - "hybrid" (reserved): main write/edit blocked by default; must spawn Crafter;
+   *   solo escape via future /solo or user override. NOT IMPLEMENTED YET — if set,
+   *   runtime still behaves as nudge (see craft-orchestration.ts).
+   *
+   * Pure strict (no escape) is intentionally not a mode.
+   */
+  orchestrationMode?: OrchestrationMode;
 }
 
 export type ToolDescriptionMode = "full" | "compact" | "custom";
@@ -83,6 +99,7 @@ export interface SettingsAppliers {
   setToolDescriptionMode: (mode: ToolDescriptionMode) => void;
   setFleetView: (b: boolean) => void;
   setPlanMode: (b: boolean) => void;
+  setOrchestrationMode: (mode: OrchestrationMode) => void;
 }
 
 /** Emit callback — a subset of `pi.events.emit` to keep helpers testable. */
@@ -141,6 +158,10 @@ function sanitize(raw: unknown): SubagentsSettings {
   }
   if (typeof r.planMode === "boolean") {
     out.planMode = r.planMode;
+  }
+  const orchestration = parseOrchestrationMode(r.orchestrationMode);
+  if (orchestration) {
+    out.orchestrationMode = orchestration;
   }
   return out;
 }
@@ -201,6 +222,7 @@ export function applySettings(s: SubagentsSettings, appliers: SettingsAppliers):
   if (s.toolDescriptionMode) appliers.setToolDescriptionMode(s.toolDescriptionMode);
   if (typeof s.fleetView === "boolean") appliers.setFleetView(s.fleetView);
   if (typeof s.planMode === "boolean") appliers.setPlanMode(s.planMode);
+  if (s.orchestrationMode) appliers.setOrchestrationMode(s.orchestrationMode);
 }
 
 /**
