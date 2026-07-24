@@ -41,7 +41,7 @@
  * what you register in `beforeRun` and which `subagent_type` the `Agent` call
  * names. See `test/subagents-print-mode-e2e.test.ts` for usage.
  */
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -247,6 +247,17 @@ export async function runPrintMode(options: RunPrintModeOptions): Promise<PrintM
   // --- working dir (own it only if we created it) ---
   const ownsCwd = options.cwd == null;
   const cwd = options.cwd ?? mkdtempSync(join(tmpdir(), "subagents-print-"));
+
+  // Craft mode for e2e spawns: plan mode blocks write-capable Agent types.
+  // Tests exercise Agent orchestration, not the plan-mode guard.
+  const summonerDir = join(cwd, ".pi");
+  mkdirSync(summonerDir, { recursive: true });
+  const summonerPath = join(summonerDir, "summoner.json");
+  try {
+    writeFileSync(summonerPath, JSON.stringify({ planMode: false }), { flag: "wx" });
+  } catch {
+    // Caller may already have a summoner.json — leave it alone.
+  }
 
   // chdir into cwd: the extension discovers .pi/agents/*.md from process.cwd()
   // (not ctx.cwd), and re-reads it on every Agent invocation — so a custom agent

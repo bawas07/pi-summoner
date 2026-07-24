@@ -306,7 +306,8 @@ describe("agent type registry", () => {
       registerAgents(agents);
 
       expect(isValidType("Crafter")).toBe(false);
-      expect(getAvailableTypes()).not.toContain("Gatekeeper");
+      expect(getAvailableTypes()).not.toContain("Crafter");
+      expect(getAvailableTypes()).toContain("Gatekeeper");
     });
 
     it("general-purpose can be disabled but fallback still works", () => {

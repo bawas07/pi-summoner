@@ -46,7 +46,14 @@ import {
 import { FleetList, type FleetUICtx } from "./ui/fleet-list.js";
 import { addUsage, getLifetimeTotal, getSessionContextPercent, type LifetimeUsage } from "./usage.js";
 import { buildDetails, buildNotificationDetails, createActivityTracker, escapeXml, formatLifetimeTokens, formatTaskNotification, getStatusLabel, textResult } from "./notifications.js";
-import { MAIN_CRAFTER_PERSONA, PLAN_MODE_PERSONA } from "./personas.js";
+import {
+  DEFAULT_ORCHESTRATION_MODE,
+  type OrchestrationMode,
+  resolveOrchestrationMode,
+  shouldBlockMainWrite,
+} from "./craft-orchestration.js";
+import { MAIN_ORCHESTRATOR_PERSONA, PLAN_MODE_PERSONA } from "./personas.js";
+import { decidePlanModeToolCall } from "./plan-mode-guard.js";
 import { loadPartyRules, savePartyRules, type PartyRules } from "./party-rules.js";
 import { registerModeIndicator, setModeIndicator } from "./ui/mode-indicator.js";
 import { executeAgent } from "./tools/agent-tool.js";
@@ -331,94 +338,39 @@ export default function (pi: ExtensionAPI) {
   });
 
   // ---- Plan mode tool guard — hard enforcement ----
-  // In plan mode, block all destructive tool calls except .md file writes.
-  // This is the hard guard; the prompt instructions are the soft layer.
+  // Soft layer: PLAN_MODE_PERSONA. Hard layer: decidePlanModeToolCall.
   pi.on("tool_call", (event) => {
-    if (!isPlanModeEnabled()) return; // crafting mode: allow everything
-
-    // Read-only tools — always allowed
-    if (event.toolName === "read" || event.toolName === "grep" ||
-        event.toolName === "find" || event.toolName === "ls" ||
-        event.toolName === "fffind" || event.toolName === "ffgrep") {
-      return;
-    }
-
-    // plan_checkpoint — always allowed (official escape hatch from plan mode)
-    if (event.toolName === "plan_checkpoint") {
-      return;
-    }
-
-    // Bash — allow read-only commands; block destructive ones
-    if (event.toolName === "bash") {
-      const cmd: string = (event.input as Record<string, unknown>).command as string || "";
-
-      // Block output redirection (writing to files via >, >>, 2>, &>)
-      if (/[^<]>\s*[^\s=]/.test(cmd)) {
+    if (!isPlanModeEnabled()) {
+      // Craft mode: nudge keeps writes open. Hybrid seam (not enforced yet).
+      if (
+        shouldBlockMainWrite(resolveOrchestrationMode(getOrchestrationMode())) &&
+        (event.toolName === "write" || event.toolName === "edit")
+      ) {
         return {
           block: true,
-          reason: "🔮 Plan mode: bash file redirection is disabled. Only .md file writes are permitted.",
+          reason:
+            "⚡ Hybrid orchestration: main session cannot write/edit. Spawn Crafter (or enable solo escape).",
         };
       }
-
-      // Block known destructive commands
-      if (/\b(rm\b|mkdir|rmdir|mv|cp\b|chmod|chown|touch|ln\b|truncate|dd\b|mkfs)\b/.test(cmd)) {
-        return {
-          block: true,
-          reason: "🔮 Plan mode: destructive bash commands are disabled. Only .md file writes are permitted.",
-        };
-      }
-
-      // Allow read-only commands (cat, ls, grep, find, head, tail, tests, etc.)
       return;
     }
 
-    // Write / Edit — allowed only for .md files
-    if (event.toolName === "write" || event.toolName === "edit") {
-      const path: string | undefined = (event.input as Record<string, unknown>).path as string | undefined;
-      if (path && (!path.endsWith(".md") || !path.endsWith(".json"))) {
-        return {
-          block: true,
-          reason: `🔮 Plan mode: only .md files can be written. "${path}" is not a .md file.`,
-        };
-      }
-      // .md file — allow
-      return;
+    const decision = decidePlanModeToolCall({
+      toolName: event.toolName,
+      input: (event.input ?? {}) as Record<string, unknown>,
+      getAgentConfig,
+    });
+    if (decision.block) {
+      return { block: true, reason: decision.reason };
     }
-
-    // Custom/unknown tools — block in plan mode (safety-first)
-    return {
-      block: true,
-      reason: `🔮 Plan mode: tool "${event.toolName}" is not available. Only read/search tools and .md file writes are permitted.`,
-    };
   });
 
-  // Lightweight heuristic: is the prompt coding-related?
-  // Checks for file paths, code constructs, and engineering terms.
-  const CODING_SIGNALS = [
-    /\.(ts|js|jsx|tsx|py|rs|go|java|rb|php|cpp|c|h|css|html|json|yaml|yml|md|sql|sh|bash|toml)$/m,
-    /\b(function|class|interface|type|enum|const|let|var|import|export|async|await|try|catch|throw)\b/,
-    /\b(bug|fix|refactor|implement|build|deploy|test|debug|optimize|migrate|upgrade|patch|release)\b/,
-    /\b(API|endpoint|route|middleware|database|schema|migration|component|hook|module|package|dependency)\b/,
-    /\b(src\/|app\/|lib\/|test\/|components\/|utils\/|services\/|hooks\/|pages\/|routes\/)/,
-    /\b(merge|commit|branch|PR|pull request|code review|refactor|architecture|design pattern)\b/i,
-    /\b(write|create|add|change|modify|update|delete|remove)\s+(a|the|new|this)\s+(file|function|class|component|module|endpoint|route|test)/i,
-  ];
-
-  function isCodingRelated(prompt: string): boolean {
-    if (!prompt) return false;
-    return CODING_SIGNALS.some((re) => re.test(prompt));
-  }
-
-  // Inject mode-appropriate persona into the system prompt for every agent turn.
-  // Plan mode always injects. crafting mode only injects for coding-related prompts.
+  // Inject mode-appropriate persona every turn (always — including short follow-ups).
   pi.on("before_agent_start", async (event) => {
     if (isPlanModeEnabled()) {
       return { systemPrompt: event.systemPrompt + PLAN_MODE_PERSONA };
     }
-    // crafting mode: only inject Main Crafter for coding-related conversations
-    if (isCodingRelated(event.prompt)) {
-      return { systemPrompt: event.systemPrompt + MAIN_CRAFTER_PERSONA };
-    }
+    return { systemPrompt: event.systemPrompt + MAIN_ORCHESTRATOR_PERSONA };
   });
 
   pi.on("session_before_switch", () => {
@@ -488,6 +440,19 @@ export default function (pi: ExtensionAPI) {
     planModeEnabled = b;
     setModeIndicator(b ? "plan" : "crafting");
     updateStatusBar();
+  }
+
+  // Craft orchestration policy (nudge implemented; hybrid reserved).
+  let orchestrationMode: OrchestrationMode = DEFAULT_ORCHESTRATION_MODE;
+  function getOrchestrationMode(): OrchestrationMode { return orchestrationMode; }
+  function setOrchestrationMode(mode: OrchestrationMode): void {
+    orchestrationMode = resolveOrchestrationMode(mode);
+    if (mode === "hybrid") {
+      // Reserved — enforcement not shipped; warn once per process if possible.
+      console.warn(
+        '[agent-summoner] orchestrationMode "hybrid" is not implemented yet; behaving as "nudge".',
+      );
+    }
   }
 
   /** Update the TUI status bar to show mode. */
@@ -628,6 +593,7 @@ export default function (pi: ExtensionAPI) {
       setToolDescriptionMode: setToolDescriptionMode,
       setFleetView: setFleetViewEnabled,
       setPlanMode: setPlanModeEnabled,
+      setOrchestrationMode,
     },
     (event, payload) => pi.events.emit(event, payload),
   );
@@ -643,6 +609,7 @@ ${buildCompactTypeListText()}
 Custom agents: .pi/agents/<name>.md (project) or ${getAgentDir()}/agents/<name>.md (global).
 
 Notes:
+- Prefer Scout / Crafter / Gatekeeper for their roles; solo main edits only for true one-liners or explicit user request.
 - description: 3-5 words (shown in UI). Prompts must be self-contained — the agent has not seen this conversation.
 - Parallel work: one message, multiple Agent calls, run_in_background: true on each. You are notified when background agents finish — never poll or sleep.
 - The result is not shown to the user — summarize it for them. Verify an agent's claimed code changes before reporting work done.
@@ -658,9 +625,11 @@ Custom agents can be defined in .pi/agents/<name>.md (project) or ${getAgentDir(
 
 When using the Agent tool, specify a subagent_type parameter to select which agent type to use.
 
-## When not to use
+## When to use / when not to
 
-If the target is already known, use a direct tool — \`read\` for a known path, \`grep\`/\`find\` for a specific symbol or string. Reserve this tool for open-ended questions that span the codebase, or tasks that match an available agent type.
+In craft mode, prefer **Crafter** for non-trivial implementation and **Gatekeeper** for review. Use **Scout** for codebase exploration. Direct write/edit on main is for true one-liners or when the user asks you to solo.
+
+If a single known path is enough, use \`read\` / \`grep\` / \`find\` directly. Reserve Agent for specialist work, parallel research, or protecting the main context window.
 
 ## Usage notes
 
@@ -744,11 +713,16 @@ Terse command-style prompts produce shallow, generic work.
     description: agentToolDescription,
     promptSnippet: "Launch autonomous sub-agents for complex multi-step tasks",
     promptGuidelines: [
-      "Use Agent with specialized agents when the task matches an agent type's description. Subagents are valuable for parallelizing independent queries or for protecting the main context window from excessive results, but should not be used excessively when not needed. Importantly, avoid duplicating work that subagents are already doing — if you delegate research to a subagent, do not also perform the same searches yourself.",
-      "For broad codebase exploration or research, spawn Agent with an appropriate subagent_type (e.g. Scout). Otherwise use direct tools (read, grep, find) when the target is already known.",
+      "Prefer specialists: Scout for exploration, Crafter for non-trivial implementation, Gatekeeper for read-only review. Avoid duplicating work you already delegated.",
+      "For broad codebase exploration, spawn Scout. Use direct read/grep/find only when the target path is already known.",
+      "Direct write/edit on main only for true one-liners or when the user explicitly asks you to solo.",
       "When an agent runs in the background, you will be notified on completion — do not poll or sleep waiting for it. Continue with other work instead.",
       "Trust but verify: an agent's summary describes intent, not outcome. When an agent writes or edits code, check the actual changes before reporting work as done.",
-      ...(isPlanModeEnabled() ? ["🔮 Plan mode active — you are in analysis & planning mode. Write/edit only to .md files. Toggle with /mode."] : []),
+      ...(isPlanModeEnabled()
+        ? [
+            "🔮 Plan mode active — analysis & planning only. Write/edit .md only. Spawn read-only agents (Scout). ask_user_question is allowed. Toggle with /mode.",
+          ]
+        : []),
     ],
     parameters: Type.Object({
       prompt: Type.String({
@@ -1046,6 +1020,7 @@ Terse command-style prompts produce shallow, generic work.
     setFleetViewEnabled,
     setPlanModeEnabled,
     isPlanModeEnabled,
+    getOrchestrationMode,
     setToolDescriptionMode,
     setDisableDefaultAgents,
   });
@@ -1061,6 +1036,7 @@ Terse command-style prompts produce shallow, generic work.
       toolDescriptionMode: getToolDescriptionMode(),
       fleetView: isFleetViewEnabled(),
       planMode: isPlanModeEnabled(),
+      orchestrationMode: getOrchestrationMode(),
     };
   }
 
