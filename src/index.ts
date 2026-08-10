@@ -12,7 +12,7 @@
 
 import { existsSync, mkdirSync, readFileSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
-import { defineTool, type ExtensionAPI, type ExtensionCommandContext, type ExtensionContext, getAgentDir, getSettingsListTheme } from "@earendil-works/pi-coding-agent";
+import { defineTool, type ExtensionAPI, type ExtensionCommandContext, type ExtensionContext, type ExtensionUIContext, getAgentDir, getSettingsListTheme } from "@earendil-works/pi-coding-agent";
 import { Container, Key, matchesKey, type SettingItem, SettingsList, Spacer, Text } from "@earendil-works/pi-tui";
 import { Type } from "@sinclair/typebox";
 import { AgentManager } from "./agents/agent-manager.js";
@@ -442,9 +442,9 @@ export default function (pi: ExtensionAPI) {
   // Toggle via `/mode` command.
   let planModeEnabled = true;
   function isPlanModeEnabled(): boolean { return planModeEnabled; }
-  function setPlanModeEnabled(b: boolean): void {
+  function setPlanModeEnabled(b: boolean, uiCtx?: ExtensionUIContext): void {
     planModeEnabled = b;
-    setModeIndicator(b ? "plan" : "crafting");
+    setModeIndicator(b ? "plan" : "crafting", uiCtx);
     updateStatusBar();
   }
 
@@ -981,10 +981,9 @@ Terse command-style prompts produce shallow, generic work.
       }
 
       if (choice.startsWith("✅")) {
-        setPlanModeEnabled(false);
-        // Force-refresh UI from the active tool context so the mode
-        // indicator and status bar update immediately.
-        ctx.ui.setStatus("agent-summoner", "⚡ agent-summoner · crafting");
+        // Pass ctx.ui so setModeIndicator uses the active tool context's UI,
+        // not a potentially stale module-level reference from session_start.
+        setPlanModeEnabled(false, ctx.ui);
         saveAndEmitChanged(
           snapshotSettings(),
           "Switched to crafting mode (plan approved)",

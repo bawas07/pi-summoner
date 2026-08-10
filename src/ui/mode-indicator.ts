@@ -18,9 +18,13 @@ let registered = false;
 let ui: ExtensionUIContext | undefined;
 
 /** Update the in-memory mode and re-render the widget. */
-export function setModeIndicator(mode: "plan" | "crafting"): void {
+export function setModeIndicator(mode: "plan" | "crafting", uiOverride?: ExtensionUIContext): void {
   currentMode = mode;
   currentPhase = null; // reset phase on mode switch
+  // Update the stored reference if an override is provided (e.g. from plan_checkpoint)
+  if (uiOverride) {
+    ui = uiOverride;
+  }
   if (!ui) {
     console.warn("[agent-summoner] setModeIndicator called before ui registered — update deferred");
     return;
