@@ -366,8 +366,14 @@ export default function (pi: ExtensionAPI) {
   });
 
   // Inject mode-appropriate persona every turn (always — including short follow-ups).
+  // Also sync the mode indicator and status bar to in-memory state — this is the
+  // safety net that catches any code path that changed planModeEnabled without
+  // triggering a UI refresh (e.g. plan_checkpoint tool).
   pi.on("before_agent_start", async (event) => {
-    if (isPlanModeEnabled()) {
+    const mode = isPlanModeEnabled();
+    setModeIndicator(mode ? "plan" : "crafting");
+    updateStatusBar();
+    if (mode) {
       return { systemPrompt: event.systemPrompt + PLAN_MODE_PERSONA };
     }
     return { systemPrompt: event.systemPrompt + MAIN_ORCHESTRATOR_PERSONA };
@@ -976,6 +982,9 @@ Terse command-style prompts produce shallow, generic work.
 
       if (choice.startsWith("✅")) {
         setPlanModeEnabled(false);
+        // Force-refresh UI from the active tool context so the mode
+        // indicator and status bar update immediately.
+        ctx.ui.setStatus("agent-summoner", "⚡ agent-summoner · crafting");
         saveAndEmitChanged(
           snapshotSettings(),
           "Switched to crafting mode (plan approved)",
@@ -1071,6 +1080,40 @@ Terse command-style prompts produce shallow, generic work.
       const { message, level } = saveAndEmitChanged(
         snapshotSettings(),
         `Mode set to ${newMode}`,
+        (event, payload) => pi.events.emit(event, payload),
+      );
+      ctx.ui.notify(message, level);
+    },
+  });
+
+  pi.registerCommand("plan", {
+    description: "Switch to plan mode — analysis & planning, .md writes only",
+    handler: async (_args, ctx) => {
+      if (isPlanModeEnabled()) {
+        ctx.ui.notify("Already in plan mode.", "info");
+        return;
+      }
+      setPlanModeEnabled(true);
+      const { message, level } = saveAndEmitChanged(
+        snapshotSettings(),
+        "Mode set to plan",
+        (event, payload) => pi.events.emit(event, payload),
+      );
+      ctx.ui.notify(message, level);
+    },
+  });
+
+  pi.registerCommand("craft", {
+    description: "Switch to crafting mode — full code editing enabled",
+    handler: async (_args, ctx) => {
+      if (!isPlanModeEnabled()) {
+        ctx.ui.notify("Already in crafting mode.", "info");
+        return;
+      }
+      setPlanModeEnabled(false);
+      const { message, level } = saveAndEmitChanged(
+        snapshotSettings(),
+        "Mode set to crafting",
         (event, payload) => pi.events.emit(event, payload),
       );
       ctx.ui.notify(message, level);
